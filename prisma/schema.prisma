@@ -1,0 +1,683 @@
+// Generative Engine Monitor — data model
+//
+// Measurement grain, from coarse to fine:
+//   Run      one measurement campaign for a project
+//   RunTask  one cell: (query x provider x mode) — the aggregation unit
+//   RunSample one paid API call — evidence hangs here, never on the task
+//
+// Scores live at all three grains: SampleScore (raw), TaskScore and RunScore
+// (median + bootstrap CI). Evidence belongs to a single response; a score
+// belongs to a distribution. That split is what makes confidence intervals and
+// replay possible.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Auth ────────────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  projects            Project[]
+  providerCredentials ProviderCredential[]
+  auditLogs           AuditLog[]
+
+  @@map("users")
+}
+
+// ─── Project ─────────────────────────────────────────────────────────────────
+
+model Project {
+  id             String   @id @default(cuid())
+  userId         String   @map("user_id")
+  name           String
+  domain         String?
+  targetCountry  String   @default("FR") @map("target_country")
+  targetLanguage String   @default("fr") @map("target_language")
+
+  // Sampling policy. Repetitions drive the confidence interval; modes drive the
+  // parametric/grounded split.
+  repetitions          Int            @default(3)
+  samplingModes        SamplingMode[] @default([PARAMETRIC, GROUNDED])
+  activeScoringVersion String         @default("v3") @map("active_scoring_version")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  brands      Brand[]
+  competitors Competitor[]
+  queries     Query[]
+  runs        Run[]
+  auditLogs   AuditLog[]
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("projects")
+}
+
+model Brand {
+  id        String   @id @default(cuid())
+  projectId String   @map("project_id")
+  name      String
+  domain    String?
+  aliases   String[] @default([])
+  createdAt DateTime @default(now()) @map("created_at")
+
+  project  Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  mentions BrandMention[]
+
+  @@index([projectId])
+  @@map("brands")
+}
+
+model Competitor {
+  id        String   @id @default(cuid())
+  projectId String   @map("project_id")
+  name      String
+  domain    String?
+  aliases   String[] @default([])
+  createdAt DateTime @default(now()) @map("created_at")
+
+  project  Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  mentions CompetitorMention[]
+
+  @@index([projectId])
+  @@map("competitors")
+}
+
+model Query {
+  id        String   @id @default(cuid())
+  projectId String   @map("project_id")
+  text      String
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  project  Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  runTasks RunTask[]
+
+  @@index([projectId, isActive])
+  @@map("queries")
+}
+
+// ─── Providers ───────────────────────────────────────────────────────────────
+
+model Provider {
+  id             String  @id @default(cuid())
+  code           String  @unique
+  label          String
+  isActiveGlobal Boolean @default(true) @map("is_active_global")
+
+  // Capability flags decide which modes a run can plan for this provider.
+  // Perplexity is search-native: it has no parametric mode.
+  supportsParametric Boolean @default(true) @map("supports_parametric")
+  supportsGrounded   Boolean @default(false) @map("supports_grounded")
+
+  defaultModel   String @default("") @map("default_model")
+  rpmLimit       Int    @default(60) @map("rpm_limit")
+  maxConcurrency Int    @default(4) @map("max_concurrency")
+
+  credentials ProviderCredential[]
+  runTasks    RunTask[]
+
+  @@map("providers")
+}
+
+/// API keys are encrypted at rest with AES-256-GCM. `keyVersion` indexes into
+/// the CREDENTIAL_KEYS env map so keys can be rotated without downtime;
+/// `fingerprint` is an HMAC that lets us detect a duplicate key without
+/// decrypting anything.
+model ProviderCredential {
+  id         String @id @default(cuid())
+  userId     String @map("user_id")
+  providerId String @map("provider_id")
+
+  cipherText  Bytes  @map("cipher_text")
+  iv          Bytes
+  authTag     Bytes  @map("auth_tag")
+  keyVersion  Int    @map("key_version")
+  fingerprint String @map("fingerprint")
+  lastFour    String @map("last_four")
+
+  isValid         Boolean   @default(false) @map("is_valid")
+  lastValidatedAt DateTime? @map("last_validated_at")
+  validationError String?   @map("validation_error")
+  rotatedAt       DateTime? @map("rotated_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, providerId])
+  @@index([keyVersion])
+  @@map("provider_credentials")
+}
+
+// ─── Runs ────────────────────────────────────────────────────────────────────
+
+enum SamplingMode {
+  /// No search tool: what the model retained from training.
+  PARAMETRIC
+  /// Provider's native web search enabled: what it retrieves right now.
+  GROUNDED
+}
+
+enum RunStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  /// Some samples failed but enough succeeded to score. Never reported as COMPLETED.
+  PARTIAL
+  FAILED
+  CANCELLING
+  CANCELLED
+}
+
+enum TaskStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  PARTIAL
+  FAILED
+  CANCELLED
+}
+
+enum SampleStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model Run {
+  id        String    @id @default(cuid())
+  projectId String    @map("project_id")
+  status    RunStatus @default(PENDING)
+
+  // Snapshotted at plan time so a run stays interpretable after the project
+  // switches to a newer scoring version.
+  scoringVersion    String         @map("scoring_version")
+  extractionVersion String         @map("extraction_version")
+  repetitions       Int
+  modes             SamplingMode[]
+
+  totalTasks    Int @default(0) @map("total_tasks")
+  pendingTasks  Int @default(0) @map("pending_tasks")
+  totalSamples  Int @default(0) @map("total_samples")
+  doneSamples   Int @default(0) @map("done_samples")
+  failedSamples Int @default(0) @map("failed_samples")
+
+  cancelRequestedAt DateTime? @map("cancel_requested_at")
+  startedAt         DateTime? @map("started_at")
+  completedAt       DateTime? @map("completed_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  project Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  tasks   RunTask[]
+  scores  RunScore[]
+  shares  VoiceShare[]
+  jobs    Job[]
+
+  @@index([projectId, status, createdAt(sort: Desc)])
+  @@map("runs")
+}
+
+model RunTask {
+  id         String       @id @default(cuid())
+  runId      String       @map("run_id")
+  projectId  String       @map("project_id")
+  queryId    String       @map("query_id")
+  providerId String       @map("provider_id")
+  mode       SamplingMode
+  status     TaskStatus   @default(PENDING)
+
+  plannedSamples Int @map("planned_samples")
+  pendingSamples Int @map("pending_samples")
+  doneSamples    Int @default(0) @map("done_samples")
+  failedSamples  Int @default(0) @map("failed_samples")
+
+  errorMessage String?   @map("error_message")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  completedAt  DateTime? @map("completed_at")
+
+  run      Run      @relation(fields: [runId], references: [id], onDelete: Cascade)
+  query    Query    @relation(fields: [queryId], references: [id], onDelete: Cascade)
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  samples RunSample[]
+  scores  TaskScore[]
+  shares  VoiceShare[]
+
+  @@unique([runId, queryId, providerId, mode])
+  @@index([runId, status])
+  @@index([projectId, queryId, mode, createdAt(sort: Desc)])
+  @@map("run_tasks")
+}
+
+/// One paid API call. All evidence (response, citations, mentions) hangs here.
+model RunSample {
+  id          String       @id @default(cuid())
+  taskId      String       @map("task_id")
+  runId       String       @map("run_id")
+  projectId   String       @map("project_id")
+  sampleIndex Int          @map("sample_index")
+  status      SampleStatus @default(PENDING)
+  attempt     Int          @default(0)
+
+  model      String?
+  promptHash String? @map("prompt_hash")
+  latencyMs  Int?    @map("latency_ms")
+  tokensIn   Int?    @map("tokens_in")
+  tokensOut  Int?    @map("tokens_out")
+  costMicros Int?    @map("cost_micros")
+
+  errorCode    String?   @map("error_code")
+  errorMessage String?   @map("error_message")
+  startedAt    DateTime? @map("started_at")
+  completedAt  DateTime? @map("completed_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  task RunTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  response           AIResponse?
+  citations          Citation[]
+  brandMentions      BrandMention[]
+  competitorMentions CompetitorMention[]
+  scores             SampleScore[]
+  job                Job?
+
+  @@unique([taskId, sampleIndex])
+  @@index([runId, status])
+  @@map("run_samples")
+}
+
+// ─── Evidence ────────────────────────────────────────────────────────────────
+
+/// rawJson is deliberately non-nullable: it is the substrate that makes replay
+/// possible. Native grounding metadata must be stored verbatim, never pre-parsed
+/// away, or a future scoring version can no longer re-derive citations from it.
+model AIResponse {
+  id           String   @id @default(cuid())
+  sampleId     String   @unique @map("sample_id")
+  rawText      String   @map("raw_text")
+  rawJson      Json     @map("raw_json")
+  finishReason String?  @map("finish_reason")
+  truncated    Boolean  @default(false)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  sample RunSample @relation(fields: [sampleId], references: [id], onDelete: Cascade)
+
+  @@map("ai_responses")
+}
+
+enum CitationSource {
+  /// Provider's own grounding metadata — a genuinely retrieved source.
+  NATIVE
+  /// Markdown link in the answer text; may be recalled rather than retrieved.
+  INLINE_MARKDOWN
+  /// Bare URL in the answer text.
+  BARE_URL
+}
+
+model Citation {
+  id        String @id @default(cuid())
+  sampleId  String @map("sample_id")
+  runId     String @map("run_id")
+  projectId String @map("project_id")
+
+  url           String
+  normalizedUrl String         @map("normalized_url")
+  domain        String
+  title         String?
+  position      Int?
+  isBrandDomain Boolean        @default(false) @map("is_brand_domain")
+  sourceKind    CitationSource @map("source_kind")
+
+  extractionVersion String @map("extraction_version")
+
+  sample RunSample @relation(fields: [sampleId], references: [id], onDelete: Cascade)
+
+  @@unique([sampleId, normalizedUrl, extractionVersion])
+  @@index([runId, domain])
+  @@index([projectId, domain])
+  @@map("citations")
+}
+
+enum MentionType {
+  EXACT
+  ALIAS
+  /// The entity's domain appeared in the answer text.
+  DOMAIN
+  /// Fuzzy token match (edit distance 1).
+  APPROXIMATE
+}
+
+enum Sentiment {
+  POSITIVE
+  NEUTRAL
+  NEGATIVE
+  MIXED
+}
+
+enum EntityKind {
+  BRAND
+  COMPETITOR
+}
+
+/// One row per occurrence, not one per entity. Position and frequency are real
+/// measurements here, which is what prominence scoring needs.
+model BrandMention {
+  id                String @id @default(cuid())
+  sampleId          String @map("sample_id")
+  runId             String @map("run_id")
+  projectId         String @map("project_id")
+  brandId           String @map("brand_id")
+  extractionVersion String @map("extraction_version")
+
+  mentionType        MentionType @map("mention_type")
+  occurrenceIndex    Int         @map("occurrence_index")
+  charOffset         Int         @map("char_offset")
+  sentenceIndex      Int         @map("sentence_index")
+  normalizedPosition Float       @map("normalized_position")
+  inFirstSentence    Boolean     @map("in_first_sentence")
+  orderRank          Int         @map("order_rank")
+  occurrencesTotal   Int         @map("occurrences_total")
+
+  context    String
+  confidence Float  @default(1.0)
+
+  sentiment             Sentiment?
+  sentimentScore        Float?     @map("sentiment_score")
+  sentimentJudgeVersion String?    @map("sentiment_judge_version")
+
+  sample RunSample @relation(fields: [sampleId], references: [id], onDelete: Cascade)
+  brand  Brand     @relation(fields: [brandId], references: [id], onDelete: Cascade)
+
+  @@unique([sampleId, brandId, extractionVersion, occurrenceIndex])
+  @@index([runId, brandId])
+  @@index([projectId, brandId])
+  @@map("brand_mentions")
+}
+
+model CompetitorMention {
+  id                String @id @default(cuid())
+  sampleId          String @map("sample_id")
+  runId             String @map("run_id")
+  projectId         String @map("project_id")
+  competitorId      String @map("competitor_id")
+  extractionVersion String @map("extraction_version")
+
+  mentionType        MentionType @map("mention_type")
+  occurrenceIndex    Int         @map("occurrence_index")
+  charOffset         Int         @map("char_offset")
+  sentenceIndex      Int         @map("sentence_index")
+  normalizedPosition Float       @map("normalized_position")
+  inFirstSentence    Boolean     @map("in_first_sentence")
+  orderRank          Int         @map("order_rank")
+  occurrencesTotal   Int         @map("occurrences_total")
+
+  context    String
+  confidence Float  @default(1.0)
+
+  sentiment             Sentiment?
+  sentimentScore        Float?     @map("sentiment_score")
+  sentimentJudgeVersion String?    @map("sentiment_judge_version")
+
+  sample     RunSample  @relation(fields: [sampleId], references: [id], onDelete: Cascade)
+  competitor Competitor @relation(fields: [competitorId], references: [id], onDelete: Cascade)
+
+  @@unique([sampleId, competitorId, extractionVersion, occurrenceIndex])
+  @@index([runId, competitorId])
+  @@index([projectId, competitorId])
+  @@map("competitor_mentions")
+}
+
+// ─── Scoring ─────────────────────────────────────────────────────────────────
+
+/// `contributions` holds the signed per-rule breakdown (ScoreContribution[]),
+/// including the text offsets that justify each rule. Stored as JSONB rather
+/// than a table because it is always read as one whole unit for one sample and
+/// never filtered or aggregated in SQL.
+model SampleScore {
+  id       String @id @default(cuid())
+  sampleId String @map("sample_id")
+  taskId   String @map("task_id")
+  runId    String @map("run_id")
+
+  scoringVersion    String @map("scoring_version")
+  extractionVersion String @map("extraction_version")
+
+  score            Float
+  brandPresent     Boolean @map("brand_present")
+  brandOrderRank   Int?    @map("brand_order_rank")
+  brandOccurrences Int     @default(0) @map("brand_occurrences")
+  competitorCount  Int     @default(0) @map("competitor_count")
+  citationCount    Int     @default(0) @map("citation_count")
+  brandDomainCited Boolean @default(false) @map("brand_domain_cited")
+  shareOfVoice     Float   @map("share_of_voice")
+
+  contributions Json
+  computedAt    DateTime @default(now()) @map("computed_at")
+
+  sample RunSample @relation(fields: [sampleId], references: [id], onDelete: Cascade)
+
+  @@unique([sampleId, scoringVersion])
+  @@index([runId, scoringVersion])
+  @@index([taskId, scoringVersion])
+  @@map("sample_scores")
+}
+
+/// Aggregation over a task's samples. `bootstrapSeed` is persisted so the
+/// confidence interval is reproducible bit-for-bit on replay.
+model TaskScore {
+  id     String @id @default(cuid())
+  taskId String @map("task_id")
+  runId  String @map("run_id")
+
+  scoringVersion String @map("scoring_version")
+  n              Int
+  nFailed        Int    @default(0) @map("n_failed")
+
+  median   Float
+  mean     Float
+  ciLow    Float  @map("ci_low")
+  ciHigh   Float  @map("ci_high")
+  ciMethod String @default("percentile_bootstrap_b2000") @map("ci_method")
+
+  mad       Float
+  iqr       Float
+  stability Float
+  lowN      Boolean @map("low_n")
+
+  brandPresenceRate Float  @map("brand_presence_rate")
+  bootstrapSeed     String @map("bootstrap_seed")
+
+  computedAt DateTime @default(now()) @map("computed_at")
+
+  task RunTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, scoringVersion])
+  @@index([runId, scoringVersion])
+  @@map("task_scores")
+}
+
+/// One row per (run, mode). The two axes are never blended into a single
+/// number: they answer different questions, and averaging them erases the only
+/// actionable diagnostic (the retrieval gap).
+model RunScore {
+  id    String       @id @default(cuid())
+  runId String       @map("run_id")
+  mode  SamplingMode
+
+  scoringVersion String @map("scoring_version")
+  n              Int
+
+  median Float
+  mean   Float
+  ciLow  Float @map("ci_low")
+  ciHigh Float @map("ci_high")
+
+  mad       Float
+  iqr       Float
+  stability Float
+  lowN      Boolean @map("low_n")
+
+  brandPresenceRate Float  @map("brand_presence_rate")
+  bootstrapSeed     String @map("bootstrap_seed")
+
+  computedAt DateTime @default(now()) @map("computed_at")
+
+  run Run @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, mode, scoringVersion])
+  @@map("run_scores")
+}
+
+/// Share of voice at run grain (taskId null) and task grain.
+model VoiceShare {
+  id     String  @id @default(cuid())
+  runId  String  @map("run_id")
+  taskId String? @map("task_id")
+
+  mode           SamplingMode
+  scoringVersion String       @map("scoring_version")
+
+  entityKind EntityKind @map("entity_kind")
+  entityId   String     @map("entity_id")
+  entityName String     @map("entity_name")
+
+  mentionShare  Float  @map("mention_share")
+  presenceRate  Float  @map("presence_rate")
+  citationShare Float  @map("citation_share")
+  avgOrderRank  Float? @map("avg_order_rank")
+  sampleCount   Int    @map("sample_count")
+
+  run  Run      @relation(fields: [runId], references: [id], onDelete: Cascade)
+  task RunTask? @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, taskId, mode, entityKind, entityId, scoringVersion])
+  @@index([runId, mode, scoringVersion])
+  @@map("voice_shares")
+}
+
+/// Content-addressed cache. The context window is the sole input to the judge,
+/// so identical snippets across repetitions and runs hit the cache — which is
+/// most of them.
+model SentimentJudgment {
+  id           String    @id @default(cuid())
+  cacheKey     String    @unique @map("cache_key")
+  judgeVersion String    @map("judge_version")
+  sentiment    Sentiment
+  score        Float
+  confidence   Float
+  rationale    String?
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  @@map("sentiment_judgments")
+}
+
+// ─── Job queue ───────────────────────────────────────────────────────────────
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+  /// Lease lost past max attempts — needs human attention, never auto-retried.
+  DEAD
+}
+
+enum JobKind {
+  RUN_SAMPLE
+  AGGREGATE_TASK
+  AGGREGATE_RUN
+  RESCORE_SAMPLE
+}
+
+/// Durable queue on Postgres. Claimed with FOR UPDATE SKIP LOCKED, held under a
+/// heartbeat lease so a dead worker's jobs return to the pool automatically.
+model Job {
+  id     String    @id @default(cuid())
+  kind   JobKind
+  status JobStatus @default(QUEUED)
+
+  runId        String? @map("run_id")
+  projectId    String  @map("project_id")
+  taskId       String? @map("task_id")
+  sampleId     String? @unique @map("sample_id")
+  providerCode String  @map("provider_code")
+
+  priority    Int      @default(0)
+  availableAt DateTime @default(now()) @map("available_at")
+  attempts    Int      @default(0)
+  maxAttempts Int      @default(4) @map("max_attempts")
+
+  lockedBy       String?   @map("locked_by")
+  leaseExpiresAt DateTime? @map("lease_expires_at")
+  heartbeatAt    DateTime? @map("heartbeat_at")
+
+  lastError     String? @map("last_error")
+  lastErrorCode String? @map("last_error_code")
+  payload       Json
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  completedAt DateTime? @map("completed_at")
+
+  run    Run?       @relation(fields: [runId], references: [id], onDelete: Cascade)
+  sample RunSample? @relation(fields: [sampleId], references: [id], onDelete: Cascade)
+
+  @@index([status, providerCode, availableAt, priority])
+  @@index([status, leaseExpiresAt])
+  @@index([runId, status])
+  @@map("jobs")
+}
+
+/// Token bucket, refilled lazily in SQL so it stays correct across workers.
+model RateLimitBucket {
+  key          String   @id
+  capacity     Float
+  tokens       Float
+  refillPerSec Float    @map("refill_per_sec")
+  refilledAt   DateTime @default(now()) @map("refilled_at")
+
+  @@map("rate_limit_buckets")
+}
+
+model AuditLog {
+  id        String  @id @default(cuid())
+  userId    String? @map("user_id")
+  projectId String? @map("project_id")
+
+  action     String
+  targetType String  @map("target_type")
+  targetId   String? @map("target_id")
+  metadata   Json?
+  ip         String?
+  userAgent  String? @map("user_agent")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // The trail outlives what it describes: deleting a project or a user detaches
+  // its entries instead of erasing them, so the record of what was run, rescored
+  // and exported survives the deletion it documents.
+  user    User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, createdAt(sort: Desc)])
+  @@index([userId, action, createdAt(sort: Desc)])
+  @@map("audit_logs")
+}
