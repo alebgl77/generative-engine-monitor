@@ -1,0 +1,76 @@
+##
+## Production stack. Every secret is required — no fallback values, so a missing
+## variable fails the deploy instead of silently starting with a known secret.
+##
+##   docker compose -f docker-compose.prod.yml up -d --build
+##
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
+  NEXTAUTH_URL: ${NEXTAUTH_URL:?}
+  NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?}
+  CREDENTIAL_KEYS: ${CREDENTIAL_KEYS:?}
+  CREDENTIAL_KEY_CURRENT: ${CREDENTIAL_KEY_CURRENT:?}
+  CREDENTIAL_FINGERPRINT_PEPPER: ${CREDENTIAL_FINGERPRINT_PEPPER:?}
+  OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.6-luna}
+  ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5}
+  GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.6-flash}
+  PERPLEXITY_MODEL: ${PERPLEXITY_MODEL:-sonar}
+  SENTIMENT_ENABLED: ${SENTIMENT_ENABLED:-true}
+  SENTIMENT_JUDGE_PROVIDER: ${SENTIMENT_JUDGE_PROVIDER:-openai}
+  SENTIMENT_JUDGE_MODEL: ${SENTIMENT_JUDGE_MODEL:-gpt-5.6-luna}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  NODE_ENV: production
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: ${POSTGRES_DB:?}
+    # Deliberately not published to the host.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    environment:
+      <<: *app-env
+      RUN_MIGRATIONS: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["npm", "run", "worker"]
+    environment:
+      <<: *app-env
+      # Migrations belong to a single process; two of them racing `migrate
+      # deploy` can leave the migration lock inconsistent.
+      RUN_MIGRATIONS: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      web:
+        condition: service_started
+    deploy:
+      replicas: ${WORKER_REPLICAS:-1}
+
+volumes:
+  pgdata:

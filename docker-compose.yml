@@ -1,0 +1,90 @@
+##
+## Development stack: PostgreSQL + web + worker.
+##   cp .env.example .env && docker compose up
+##
+## The worker is a separate service on purpose. Runs are executed by a durable
+## queue, not inside the HTTP request, so the web container can restart mid-run
+## without losing work.
+##
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql://${POSTGRES_USER:-gem}:${POSTGRES_PASSWORD:-gem_dev_only_change_me}@postgres:5432/${POSTGRES_DB:-gem}
+  NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
+  NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?set NEXTAUTH_SECRET in .env — run npm run keygen}
+  CREDENTIAL_KEYS: ${CREDENTIAL_KEYS:?set CREDENTIAL_KEYS in .env — run npm run keygen}
+  CREDENTIAL_KEY_CURRENT: ${CREDENTIAL_KEY_CURRENT:-1}
+  CREDENTIAL_FINGERPRINT_PEPPER: ${CREDENTIAL_FINGERPRINT_PEPPER:?set CREDENTIAL_FINGERPRINT_PEPPER in .env}
+  OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.6-luna}
+  ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5}
+  GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.6-flash}
+  PERPLEXITY_MODEL: ${PERPLEXITY_MODEL:-sonar}
+  SENTIMENT_ENABLED: ${SENTIMENT_ENABLED:-true}
+  SENTIMENT_JUDGE_PROVIDER: ${SENTIMENT_JUDGE_PROVIDER:-openai}
+  SENTIMENT_JUDGE_MODEL: ${SENTIMENT_JUDGE_MODEL:-gpt-5.6-luna}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-gem}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gem_dev_only_change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-gem}
+    # Bound to the loopback interface: an unauthenticated dev database should
+    # not be reachable from the local network.
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gem}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    restart: unless-stopped
+    command: ["npm", "run", "dev"]
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    environment:
+      <<: *app-env
+      NODE_ENV: development
+      # This service owns migrations and seeding; the worker waits for both.
+      RUN_MIGRATIONS: "true"
+      SEED_DEMO: ${SEED_DEMO:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/.next
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    restart: unless-stopped
+    command: ["npm", "run", "worker"]
+    environment:
+      <<: *app-env
+      NODE_ENV: development
+      RUN_MIGRATIONS: "false"
+      WORKER_ID: worker-dev-1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      web:
+        condition: service_started
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/.next
+
+volumes:
+  pgdata:
