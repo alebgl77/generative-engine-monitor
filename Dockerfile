@@ -1,9 +1,14 @@
+# Prisma's query and schema engines link against OpenSSL, which the Alpine base
+# does not carry. Without it the engine fails to load and every Prisma command —
+# generate, migrate, the app itself — dies on startup.
 FROM node:22-alpine AS deps
+RUN apk add --no-cache openssl
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
 FROM node:22-alpine AS builder
+RUN apk add --no-cache openssl
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY prisma ./prisma
@@ -12,6 +17,7 @@ COPY . .
 RUN npm run build
 
 FROM node:22-alpine AS runner
+RUN apk add --no-cache openssl
 WORKDIR /app
 ENV NODE_ENV=production
 
