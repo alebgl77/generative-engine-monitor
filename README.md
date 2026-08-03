@@ -59,6 +59,8 @@ npm run worker          # exécuteur d'analyses, dans un second terminal
 
 Le moteur **`mock`** ne demande aucune clé API et n'est jamais désactivé : il produit des réponses de fixture réalistes dans les deux modes, avec mentions et sources. Toute la chaîne — planification, file, exécution, extraction, scoring, agrégation, intervalles, replay, export — se démontre donc de bout en bout sans dépenser un centime, avant même d'avoir saisi une clé.
 
+Ses fixtures nomment un panel fixe d'éditeurs CRM. Pour voir un tableau de bord peuplé, partez du projet de démonstration créé par `SEED_DEMO=true`, dont la marque suivie fait partie de ce panel : un projet dont la marque n'y figure pas produira légitimement des scores nuls, ce qui se lit comme une installation cassée alors que la mesure est exacte. Dès qu'une vraie clé API est configurée, la question ne se pose plus.
+
 ## Moteurs supportés
 
 | Code | Libellé | Paramétrique | Groundé | Origine des citations | Variable de modèle |

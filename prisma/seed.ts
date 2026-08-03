@@ -92,19 +92,22 @@ async function seedDemo() {
       data: {
         userId: user.id,
         name: "Démo — CRM français",
-        domain: "moncrm.fr",
+        domain: "sellsy.com",
         targetCountry: "FR",
         targetLanguage: "fr",
       },
     }));
 
   if (!existing) {
+    // Chosen from the roster the mock engine names in its fixtures: a tracked
+    // brand the fixtures never mention would open the dashboard on zeros and
+    // read as a broken install rather than as an absent brand.
     await prisma.brand.create({
       data: {
         projectId: project.id,
-        name: "MonCRM",
-        domain: "moncrm.fr",
-        aliases: ["Mon CRM", "moncrm"],
+        name: "Sellsy",
+        domain: "sellsy.com",
+        aliases: ["Sellsy CRM"],
       },
     });
     await prisma.competitor.createMany({
