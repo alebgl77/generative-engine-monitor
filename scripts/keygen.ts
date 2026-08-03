@@ -40,9 +40,13 @@ function writeEnv(path: string): void {
     process.exit(1);
   }
   const existing = readFileSync(path, "utf8");
+  // The development key is base64, so its "dev-only" marker is not visible in
+  // the file: the placeholder has to be recognised by its exact value.
+  const PLACEHOLDER_KEYS = '{"1":"ZGV2LW9ubHkta2V5LW5vdC1mb3ItcHJvZHVjdGlvbiE="}';
   const current = existing
     .split(/\r?\n/)
-    .find((line) => line.startsWith("CREDENTIAL_KEYS=") && !line.includes("dev-only"));
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("CREDENTIAL_KEYS=") && line.slice("CREDENTIAL_KEYS=".length) !== PLACEHOLDER_KEYS);
   if (current) {
     console.error(
       "CREDENTIAL_KEYS contient déjà une clé de production dans .env.\n" +
