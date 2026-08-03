@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: gem
+          POSTGRES_PASSWORD: gem
+          POSTGRES_DB: gem_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gem"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://gem:gem@localhost:5432/gem_test
+      NEXTAUTH_SECRET: ci-only-secret-not-used-anywhere-else
+      CREDENTIAL_KEYS: '{"1":"Y2ktb25seS1rZXktbm90LXVzZWQtaW4tcHJvZHVjdCE="}'
+      CREDENTIAL_KEY_CURRENT: "1"
+      CREDENTIAL_FINGERPRINT_PEPPER: ci-only-pepper-not-used-anywhere
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npx prisma generate
+
+      - name: Apply migrations
+        run: npx prisma migrate deploy
+
+      # An empty providers table makes every run unplannable, so the seed is a
+      # deployment step and is verified as one.
+      - name: Seed reference data
+        run: npm run db:seed
+
+      - name: Verify reference data
+        run: |
+          node -e "
+            const { PrismaClient } = require('@prisma/client');
+            const db = new PrismaClient();
+            db.provider.count().then((n) => {
+              console.log('providers seeded:', n);
+              process.exit(n >= 5 ? 0 : 1);
+            });
+          "
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test
+
+      - name: Build
+        run: npm run build
