@@ -3,12 +3,21 @@ import { z } from "zod";
 
 import { json, parseBody, withProject } from "@/lib/api/route-helpers";
 import { AUDIT_ACTIONS, recordAudit } from "@/lib/audit";
-import { badRequest, notFound } from "@/lib/errors";
+import { badRequest, notFound, tooManyRequests } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import { ensureBucket, tryConsume } from "@/lib/queue/ratelimit";
 import { CURRENT_SCORING_VERSION, listScoringVersions } from "@/lib/scoring/registry";
 import { IN_FLIGHT_RUN_STATUSES, rescoreProject, rescoreRun } from "@/lib/scoring/rescore";
 
 type RouteContext = { params: Promise<{ projectId: string }> };
+
+/**
+ * Deliberately tighter than the launch limit. Replaying a project enqueues one
+ * job per sample in its entire history, and each one may consult the sentiment
+ * judge — a paid call. A replay costs less than a run, but it is not free, and
+ * it is the only endpoint that can enqueue unbounded work from a single click.
+ */
+const RESCORES_PER_HOUR = 5;
 
 const bodySchema = z.object({
   runId: z.string().min(1).optional(),
@@ -18,6 +27,14 @@ const bodySchema = z.object({
 export async function POST(request: NextRequest, { params }: RouteContext) {
   const { projectId } = await params;
   return withProject(request, projectId, async ({ project, userId, ip, userAgent }) => {
+    const bucketKey = `rescores:${userId}`;
+    await ensureBucket(bucketKey, RESCORES_PER_HOUR, RESCORES_PER_HOUR / 3600);
+    if (!(await tryConsume(bucketKey))) {
+      throw tooManyRequests(
+        `Limite de replay atteinte (${RESCORES_PER_HOUR} par heure). Réessayez plus tard.`
+      );
+    }
+
     const body = await parseBody(request, bodySchema);
     const scoringVersion = body.scoringVersion ?? CURRENT_SCORING_VERSION;
 
@@ -58,7 +75,7 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
         jobs,
         scoringVersion,
         runId: body.runId ?? null,
-        message: `${jobs} réponse(s) seront rejouées en version ${scoringVersion} à partir du texte déjà stocké : aucun crédit API n'est consommé.`,
+        message: `${jobs} réponse(s) seront rejouées en version ${scoringVersion} à partir du texte déjà stocké : aucune réponse n'est redemandée à un moteur. L'analyse de sentiment consulte en revanche son juge pour les extraits absents de son cache, et ces appels-là sont facturés — une nouvelle version d'extraction change les extraits, donc le cache ne sert plus.`,
       },
       202
     );

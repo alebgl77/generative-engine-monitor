@@ -60,7 +60,7 @@ Chaque clé est vérifiée auprès du moteur avant d'être stockée : une faute 
 
 Une clé n'est jamais réaffichée : la page ne montre qu'un masque à quatre caractères. Elle est chiffrée en AES-256-GCM avec votre identifiant de compte en donnée authentifiée.
 
-**Vous pouvez sauter cette étape.** Le moteur `mock` ne demande aucune clé et couvre les deux modes : la chaîne complète se démontre gratuitement, avec des réponses réalistes, des mentions et des citations. C'est la bonne façon d'apprendre l'outil avant d'engager des crédits.
+**Vous pouvez sauter cette étape.** Le moteur `mock` ne demande aucune clé et couvre les deux modes : la chaîne complète se démontre gratuitement, avec des réponses réalistes, des mentions et des citations. C'est la bonne façon d'apprendre l'outil avant d'engager des crédits — et ses chiffres ne sont qu'une démonstration, jamais une mesure. Dès que vous enregistrez une clé valide, `mock` cesse d'être planifié et vos analyses ne portent plus que sur de vraies réponses.
 
 Perplexity n'apparaîtra qu'en groundé : il interroge toujours le web, le mode paramétrique n'a pas de sens pour lui, et les cellules correspondantes sont écartées à la planification.
 

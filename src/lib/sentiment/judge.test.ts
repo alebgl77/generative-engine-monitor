@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
     providerCredential: { findUnique: vi.fn() },
   },
   runQuery: vi.fn(),
+  tryConsume: vi.fn(),
 }));
 
 vi.mock("@/lib/env", () => ({ getEnv: () => mocks.env }));
@@ -20,6 +21,10 @@ vi.mock("@/lib/providers/registry", () => ({
   getProvider: (code: string) => (code === "unknown" ? undefined : { runQuery: mocks.runQuery }),
 }));
 vi.mock("@/lib/crypto/credentials", () => ({ decryptCredential: () => "sk-test" }));
+vi.mock("@/lib/queue/ratelimit", () => ({
+  tryConsume: mocks.tryConsume,
+  bucketKeyForProvider: (code: string) => `provider:${code}`,
+}));
 
 import { judgeSentiment } from "@/lib/sentiment/judge";
 
@@ -51,6 +56,7 @@ beforeEach(() => {
   mocks.prisma.sentimentJudgment.createMany.mockResolvedValue({ count: 0 });
   mocks.prisma.provider.findUnique.mockResolvedValue({ id: "p1" });
   mocks.prisma.providerCredential.findUnique.mockResolvedValue(validCredential);
+  mocks.tryConsume.mockResolvedValue(true);
 });
 
 describe("judgeSentiment", () => {
@@ -192,5 +198,52 @@ describe("judgeSentiment", () => {
     });
 
     expect(result.size).toBe(0);
+  });
+});
+
+/**
+ * The judge spends the user's key against the provider's quota, so it answers to
+ * the same bucket the samples do. It used to be the one paid call no throttle
+ * could see.
+ */
+describe("judgeSentiment rate limiting", () => {
+  it("charges the provider bucket before spending a call", async () => {
+    mocks.runQuery.mockResolvedValue({
+      text: '[{"index":0,"sentiment":"POSITIVE","score":0.5,"confidence":0.9}]',
+    });
+
+    await judgeSentiment([{ entityId: "b1", entityName: "Acme", context: "bien" }], {
+      userId: "u1",
+    });
+
+    expect(mocks.tryConsume).toHaveBeenCalledWith("provider:openai");
+    const consumedAt = mocks.tryConsume.mock.invocationCallOrder[0];
+    const calledAt = mocks.runQuery.mock.invocationCallOrder[0];
+    expect(consumedAt).toBeLessThan(calledAt);
+  });
+
+  it("skips sentiment instead of spending when the bucket is empty", async () => {
+    mocks.tryConsume.mockResolvedValue(false);
+
+    const result = await judgeSentiment([{ entityId: "b1", entityName: "Acme", context: "bien" }], {
+      userId: "u1",
+    });
+
+    expect(mocks.runQuery).not.toHaveBeenCalled();
+    expect(result.size).toBe(0);
+    // Being turned away must not poison the cache with a verdict nobody made.
+    expect(mocks.prisma.sentimentJudgment.createMany).not.toHaveBeenCalled();
+  });
+
+  it("does not charge the bucket when every mention is already cached", async () => {
+    mocks.prisma.sentimentJudgment.findMany.mockImplementation(
+      cachedAs({ sentiment: "POSITIVE", score: 0.8 })
+    );
+
+    await judgeSentiment([{ entityId: "b1", entityName: "Acme", context: "excellent" }], {
+      userId: "u1",
+    });
+
+    expect(mocks.tryConsume).not.toHaveBeenCalled();
   });
 });

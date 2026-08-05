@@ -292,7 +292,7 @@ export default function RunsPage() {
       toast({
         title: "Recalcul des scores lancé",
         description:
-          "Les réponses déjà stockées sont rejouées : aucun crédit API n’est consommé.",
+          "Les réponses déjà stockées sont rejouées : aucune n’est redemandée à un moteur. L’analyse de sentiment peut en revanche consulter son juge, ce qui est facturé.",
       });
       await loadRuns();
     } catch (error) {

@@ -83,7 +83,7 @@ L'historique, jusqu'aux vingt analyses les plus récentes, et la vue d'explicabi
 
 ### Niveau analyse
 
-Statut, versions de scoring et d'extraction, répétitions, modes, progression en échantillons, horodatages. Actions : rafraîchir, lancer une analyse, **rejouer** les réponses stockées sous la version courante, **annuler** une analyse en cours. Le rejeu indique explicitement qu'aucun crédit API n'est consommé.
+Statut, versions de scoring et d'extraction, répétitions, modes, progression en échantillons, horodatages. Actions : rafraîchir, lancer une analyse, **rejouer** les réponses stockées sous la version courante, **annuler** une analyse en cours. Le rejeu indique explicitement qu'aucune réponse n'est redemandée à un moteur — mais il n'est pas gratuit pour autant : l'analyse de sentiment consulte son juge pour les extraits absents du cache, et une nouvelle version d'extraction change justement les extraits.
 
 Une analyse `PARTIAL` porte un bandeau : certains échantillons ont échoué, le reste a bien été mesuré. Une analyse `FAILED` porte son message d'erreur.
 

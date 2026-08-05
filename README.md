@@ -57,7 +57,7 @@ npm run worker          # exécuteur d'analyses, dans un second terminal
 
 `setup.sh` ne génère les secrets que lorsqu'il crée lui-même le `.env` : le copier à la main avant de l'appeler saute cette étape et laisse en place la clé de chiffrement d'exemple.
 
-Le moteur **`mock`** ne demande aucune clé API et n'est jamais désactivé : il produit des réponses de fixture réalistes dans les deux modes, avec mentions et sources. Toute la chaîne — planification, file, exécution, extraction, scoring, agrégation, intervalles, replay, export — se démontre donc de bout en bout sans dépenser un centime, avant même d'avoir saisi une clé.
+Le moteur **`mock`** ne demande aucune clé API : il produit des réponses de fixture réalistes dans les deux modes, avec mentions et sources. Toute la chaîne — planification, file, exécution, extraction, scoring, agrégation, intervalles, replay, export — se démontre donc de bout en bout sans dépenser un centime, avant même d'avoir saisi une clé. Il n'est planifié **que tant qu'aucune clé valide n'existe** : ses réponses sont des fixtures, et l'agrégation ne distingue pas leur origine, si bien que les planifier à côté d'un vrai moteur reviendrait à publier une médiane et un intervalle de confiance qu'aucun fournisseur n'a produits.
 
 Ses fixtures nomment un panel fixe d'éditeurs CRM. Pour voir un tableau de bord peuplé, partez du projet de démonstration créé par `SEED_DEMO=true`, dont la marque suivie fait partie de ce panel : un projet dont la marque n'y figure pas produira légitimement des scores nuls, ce qui se lit comme une installation cassée alors que la mesure est exacte. Dès qu'une vraie clé API est configurée, la question ne se pose plus.
 

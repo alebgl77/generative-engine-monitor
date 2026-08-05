@@ -15,7 +15,10 @@ import { logger } from "@/lib/logger";
  * there cannot be two implementations that drift apart.
  *
  * It reads only `text` and `providerSources` — never the network — which is why
- * a historical run can be rescored under a new version at zero API cost.
+ * a historical run can be rescored under a new version without asking any engine
+ * to answer again. That is not the same as free: the sentiment judge below is a
+ * paid call, and a new extraction version yields new excerpts, so its cache
+ * cannot absorb them.
  */
 
 export interface PersistInput {

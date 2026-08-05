@@ -8,6 +8,7 @@ import { getEnv } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { getProvider } from "@/lib/providers/registry";
+import { bucketKeyForProvider, tryConsume } from "@/lib/queue/ratelimit";
 
 /**
  * Sentiment judging, content-addressed.
@@ -159,6 +160,17 @@ async function judgeMisses(
 
     const apiKey = await resolveJudgeKey(providerCode, opts.userId);
     if (!apiKey) return null;
+
+    // The judge spends the same key, against the same provider quota, as the
+    // samples do — so it answers to the same bucket. Without this it was the one
+    // paid call in the system that no throttle could see, and a replay under a
+    // new extraction version misses the cache by construction, which is exactly
+    // when it fires most. Being turned away is not an error: sentiment is
+    // enrichment, and the caller already treats null as "not consulted".
+    if (!(await tryConsume(bucketKeyForProvider(providerCode)))) {
+      logger.warn("sentiment judge throttled, sentiment skipped", { providerCode });
+      return null;
+    }
 
     const response = await provider.runQuery({
       query: buildPrompt(misses.map(([, item]) => item)),
