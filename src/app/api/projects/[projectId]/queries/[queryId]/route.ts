@@ -6,7 +6,7 @@ import { assertBelongs, json, parseBody, withProject } from "@/lib/api/route-hel
 import { badRequest } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 
-type RouteContext = { params: { projectId: string; queryId: string } };
+type RouteContext = { params: Promise<{ projectId: string; queryId: string }> };
 
 const updateSchema = z.object({
   text: z.string().trim().min(1, "texte requis").max(500, "500 caractères maximum").optional(),
@@ -24,8 +24,9 @@ async function assertQueryBelongs(projectId: string, queryId: string): Promise<v
 }
 
 export async function PUT(request: NextRequest, { params }: RouteContext) {
-  return withProject(request, params.projectId, async ({ project }) => {
-    await assertQueryBelongs(project.id, params.queryId);
+  const { projectId, queryId } = await params;
+  return withProject(request, projectId, async ({ project }) => {
+    await assertQueryBelongs(project.id, queryId);
     const body = await parseBody(request, updateSchema);
 
     const data: Prisma.QueryUpdateInput = {};
@@ -34,15 +35,16 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
 
     if (Object.keys(data).length === 0) throw badRequest("Aucun champ à mettre à jour");
 
-    const query = await prisma.query.update({ where: { id: params.queryId }, data });
+    const query = await prisma.query.update({ where: { id: queryId }, data });
     return json(query);
   });
 }
 
 export async function DELETE(request: NextRequest, { params }: RouteContext) {
-  return withProject(request, params.projectId, async ({ project }) => {
-    await assertQueryBelongs(project.id, params.queryId);
-    await prisma.query.deleteMany({ where: { id: params.queryId, projectId: project.id } });
+  const { projectId, queryId } = await params;
+  return withProject(request, projectId, async ({ project }) => {
+    await assertQueryBelongs(project.id, queryId);
+    await prisma.query.deleteMany({ where: { id: queryId, projectId: project.id } });
     return json({ success: true });
   });
 }

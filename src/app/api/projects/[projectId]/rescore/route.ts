@@ -8,7 +8,7 @@ import { prisma } from "@/lib/prisma";
 import { CURRENT_SCORING_VERSION, listScoringVersions } from "@/lib/scoring/registry";
 import { IN_FLIGHT_RUN_STATUSES, rescoreProject, rescoreRun } from "@/lib/scoring/rescore";
 
-type RouteContext = { params: { projectId: string } };
+type RouteContext = { params: Promise<{ projectId: string }> };
 
 const bodySchema = z.object({
   runId: z.string().min(1).optional(),
@@ -16,7 +16,8 @@ const bodySchema = z.object({
 });
 
 export async function POST(request: NextRequest, { params }: RouteContext) {
-  return withProject(request, params.projectId, async ({ project, userId, ip, userAgent }) => {
+  const { projectId } = await params;
+  return withProject(request, projectId, async ({ project, userId, ip, userAgent }) => {
     const body = await parseBody(request, bodySchema);
     const scoringVersion = body.scoringVersion ?? CURRENT_SCORING_VERSION;
 

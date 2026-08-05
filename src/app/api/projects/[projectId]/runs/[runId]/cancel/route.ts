@@ -7,7 +7,7 @@ import { badRequest, notFound } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { requestCancel } from "@/lib/runs/plan";
 
-type RouteContext = { params: { projectId: string; runId: string } };
+type RouteContext = { params: Promise<{ projectId: string; runId: string }> };
 
 const TERMINAL: ReadonlySet<RunStatus> = new Set<RunStatus>([
   "COMPLETED",
@@ -17,9 +17,10 @@ const TERMINAL: ReadonlySet<RunStatus> = new Set<RunStatus>([
 ]);
 
 export async function POST(request: NextRequest, { params }: RouteContext) {
-  return withProject(request, params.projectId, async ({ project, userId, ip, userAgent }) => {
+  const { projectId, runId } = await params;
+  return withProject(request, projectId, async ({ project, userId, ip, userAgent }) => {
     const run = await prisma.run.findFirst({
-      where: { id: params.runId, projectId: project.id },
+      where: { id: runId, projectId: project.id },
       select: { id: true, status: true },
     });
     if (!run) throw notFound("Analyse");

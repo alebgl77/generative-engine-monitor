@@ -5,7 +5,7 @@ import { json, parseBody, withProject } from "@/lib/api/route-helpers";
 import { badRequest } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 
-type RouteContext = { params: { projectId: string } };
+type RouteContext = { params: Promise<{ projectId: string }> };
 
 const queryText = z
   .string()
@@ -29,7 +29,8 @@ const createSchema = z
   );
 
 export async function GET(request: NextRequest, { params }: RouteContext) {
-  return withProject(request, params.projectId, async ({ project }) => {
+  const { projectId } = await params;
+  return withProject(request, projectId, async ({ project }) => {
     const queries = await prisma.query.findMany({
       where: { projectId: project.id },
       orderBy: { createdAt: "asc" },
@@ -39,7 +40,8 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
 }
 
 export async function POST(request: NextRequest, { params }: RouteContext) {
-  return withProject(request, params.projectId, async ({ project }) => {
+  const { projectId } = await params;
+  return withProject(request, projectId, async ({ project }) => {
     const body = await parseBody(request, createSchema);
     const bulk = body.queries !== undefined;
     const texts = body.queries ?? (body.text !== undefined ? [body.text] : []);

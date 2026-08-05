@@ -6,7 +6,7 @@ L'application se compose de deux processus qui ne partagent que PostgreSQL.
 
 | Processus | Rôle | Commande |
 |---|---|---|
-| **web** | Next.js 14 App Router : pages, routes API, planification des analyses | `npm run dev` / `npm start` |
+| **web** | Next.js 16 App Router : pages, routes API, planification des analyses | `npm run dev` / `npm start` |
 | **worker** | draine la file de jobs : appels fournisseurs, extraction, scoring, agrégation, replay | `npm run worker` |
 
 Aucun appel fournisseur n'a lieu dans le cycle de vie d'une requête HTTP. Un appel groundé dispose d'un budget de 180 secondes, ce qui dépasse tout délai de passerelle raisonnable ; et surtout, un run représente `requêtes × moteurs × modes × répétitions` appels payants, dont l'exécution doit survivre au redéploiement du conteneur web. Le web planifie et lit, le worker exécute.
@@ -17,7 +17,7 @@ Le worker est réplicable : plusieurs instances drainent la même file sans coor
 Navigateur
     │  HTTPS
     ▼
-Next.js  ── middleware (pages) ── route helpers (session + propriété)
+Next.js  ── proxy (pages) ────── route helpers (session + propriété)
     │                                      │
     │ POST /runs → planRun()               │ GET /dashboard/* → lecture
     ▼                                      ▼
@@ -37,7 +37,7 @@ Worker ─ sémaphore par moteur ─ seau à jetons ─ appel HTTPS fournisseur
 
 ### Lecture (les vues du dashboard)
 
-1. `src/middleware.ts` protège les pages sous `/projects/**` via NextAuth. Il ne protège pas les routes API : chaque handler porte sa propre garde.
+1. `src/proxy.ts` protège les pages sous `/projects/**` via NextAuth. Il ne protège pas les routes API : chaque handler porte sa propre garde.
 2. Le handler passe par `withAuth` ou `withProject` (`src/lib/api/route-helpers.ts`). `withProject` charge le projet, renvoie `404` s'il n'existe pas et `403` s'il appartient à quelqu'un d'autre.
 3. La requête Prisma agrège des lignes déjà calculées. Les vues ne recalculent jamais le score d'un échantillon : elles lisent `sample_scores`, `task_scores`, `run_scores` et `voice_shares`, écrits par le worker.
 4. La réponse est typée par `src/types/api.ts`, module partagé par les routes et les pages : un changement de forme devient une erreur de compilation des deux côtés.

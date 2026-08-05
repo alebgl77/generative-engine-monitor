@@ -1,6 +1,6 @@
 # 08 — Dashboard
 
-Les pages vivent sous `src/app/(dashboard)/`. Le middleware protège `/projects/**` ; toute donnée affichée provient des routes documentées en [04 — Référence API](04-api-reference.md) et typée par `src/types/api.ts`.
+Les pages vivent sous `src/app/(dashboard)/`. Le proxy protège `/projects/**` ; toute donnée affichée provient des routes documentées en [04 — Référence API](04-api-reference.md) et typée par `src/types/api.ts`.
 
 Un principe traverse toutes les vues : **aucune ne recalcule un score d'échantillon**. Elles lisent des agrégats écrits par le worker, et rendent la décomposition telle qu'elle a été persistée.
 

@@ -14,7 +14,7 @@ import type {
   SampleDetail,
 } from "@/types/api";
 
-type RouteContext = { params: { projectId: string; runId: string } };
+type RouteContext = { params: Promise<{ projectId: string; runId: string }> };
 
 /** The explainability panel needs the answer, not the whole answer. */
 const TEXT_LIMIT = 4000;
@@ -179,11 +179,12 @@ function toTaskSummary(task: TaskDetail, run: Run): RunTaskSummary {
 }
 
 export async function GET(request: NextRequest, { params }: RouteContext) {
-  return withProject(request, params.projectId, async ({ project }) => {
+  const { projectId, runId } = await params;
+  return withProject(request, projectId, async ({ project }) => {
     const { limit, offset } = parseQuery(request, querySchema);
 
     const run = await prisma.run.findFirst({
-      where: { id: params.runId, projectId: project.id },
+      where: { id: runId, projectId: project.id },
     });
     if (!run) throw notFound("Analyse");
 

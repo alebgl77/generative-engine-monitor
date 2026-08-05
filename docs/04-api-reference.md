@@ -4,7 +4,7 @@ Toutes les routes vivent sous `src/app/api/`. Les formes de réponse sont décla
 
 ## Conventions
 
-**Authentification.** Le middleware ne protège que les pages. Chaque route API porte sa propre garde : `withAuth` exige une session, `withProject` exige en plus la propriété du projet. Les identifiants d'entités enfants sont recherchés avec leur `projectId`, si bien qu'un identifiant valide appartenant à un autre projet donne un `404` et non une écriture croisée.
+**Authentification.** Le proxy ne protège que les pages. Chaque route API porte sa propre garde : `withAuth` exige une session, `withProject` exige en plus la propriété du projet. Les identifiants d'entités enfants sont recherchés avec leur `projectId`, si bien qu'un identifiant valide appartenant à un autre projet donne un `404` et non une écriture croisée.
 
 **Erreurs.** Toute erreur renvoie `{ "error": "message en français" }` (`ApiErrorResponse`).
 

@@ -5,7 +5,7 @@ import { json, withProject } from "@/lib/api/route-helpers";
 import { prisma } from "@/lib/prisma";
 import type { SourceRow, SourcesResponse } from "@/types/api";
 
-type RouteContext = { params: { projectId: string } };
+type RouteContext = { params: Promise<{ projectId: string }> };
 
 interface DomainAccumulator {
   domain: string;
@@ -18,7 +18,8 @@ interface DomainAccumulator {
 }
 
 export async function GET(request: NextRequest, { params }: RouteContext) {
-  return withProject(request, params.projectId, async ({ project }) => {
+  const { projectId } = await params;
+  return withProject(request, projectId, async ({ project }) => {
     // A partial or cancelled run stopped early; the citations it collected before
     // stopping are measurements all the same.
     const run = await prisma.run.findFirst({

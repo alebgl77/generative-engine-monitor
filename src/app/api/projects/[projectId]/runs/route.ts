@@ -16,7 +16,7 @@ import type {
   RunsResponse,
 } from "@/types/api";
 
-type RouteContext = { params: { projectId: string } };
+type RouteContext = { params: Promise<{ projectId: string }> };
 
 const RUNS_PER_HOUR = 20;
 const RUNS_LISTED = 20;
@@ -110,7 +110,8 @@ function toRunSummary(run: Run, tasks: TaskRow[], taskCounts: RunTaskCounts): Ru
 }
 
 export async function GET(request: NextRequest, { params }: RouteContext) {
-  return withProject(request, params.projectId, async ({ project }) => {
+  const { projectId } = await params;
+  return withProject(request, projectId, async ({ project }) => {
     const runs = await prisma.run.findMany({
       where: { projectId: project.id },
       orderBy: { createdAt: "desc" },
@@ -158,7 +159,8 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
 }
 
 export async function POST(request: NextRequest, { params }: RouteContext) {
-  return withProject(request, params.projectId, async ({ project, userId, ip, userAgent }) => {
+  const { projectId } = await params;
+  return withProject(request, projectId, async ({ project, userId, ip, userAgent }) => {
     // Every run spends real provider credits, so the throttle is charged before
     // anything is planned rather than after.
     const bucketKey = `runs:${userId}`;

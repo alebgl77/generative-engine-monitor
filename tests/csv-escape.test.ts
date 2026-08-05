@@ -94,7 +94,7 @@ function task(fixture: TaskFixture) {
 
 function get(): Promise<Response> {
   const request = new Request("http://localhost/api/projects/proj-1/export?format=csv");
-  return GET(request as NextRequest, { params: { projectId: "proj-1" } });
+  return GET(request as NextRequest, { params: Promise.resolve({ projectId: "proj-1" }) });
 }
 
 const BOM = String.fromCharCode(0xfeff);

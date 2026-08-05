@@ -100,7 +100,7 @@ Une version de scoring publiée n'est jamais modifiée : tout changement de comp
 - **Aucune route ne renvoie une clé en clair** — les réponses ne portent qu'un masque à quatre caractères et une empreinte HMAC poivrée sert à reconnaître un doublon sans rien déchiffrer.
 - **Contrôle de propriété sur chaque route** : toute ressource de projet passe par un helper unique qui vérifie la session puis l'appartenance, et les identifiants enfants sont recherchés avec leur `projectId` pour qu'un identifiant valide d'un autre projet reste introuvable.
 - **Limitation de débit** sur l'inscription, sur le lancement d'analyses et sur chaque fournisseur, via un seau à jetons persisté en base et donc partagé entre tous les processus. L'inscription est bornée deux fois : un seau global, débité en premier, et un seau par adresse qui n'existe que si `TRUSTED_PROXY_HOPS` rend l'adresse connaissable — un client capable d'écrire son propre `X-Forwarded-For` se frapperait sinon un seau neuf à chaque requête.
-- **CSP stricte et en-têtes de sécurité** : la politique est émise par requête depuis `src/middleware.ts`, avec un nonce et `strict-dynamic` — sans nonce, le bootstrap inline du App Router serait refusé et les pages resteraient non hydratées. `default-src 'self'`, `connect-src 'self'` (le navigateur ne parle jamais à une API fournisseur), `frame-ancestors 'none'`, `object-src 'none'`. Les en-têtes indépendants de la requête — `nosniff`, `X-Frame-Options`, `Referrer-Policy`, HSTS en production — viennent de `next.config.mjs`.
+- **CSP stricte et en-têtes de sécurité** : la politique est émise par requête depuis `src/proxy.ts`, avec un nonce et `strict-dynamic` — sans nonce, le bootstrap inline du App Router serait refusé et les pages resteraient non hydratées. `default-src 'self'`, `connect-src 'self'` (le navigateur ne parle jamais à une API fournisseur), `frame-ancestors 'none'`, `object-src 'none'`. Les en-têtes indépendants de la requête — `nosniff`, `X-Frame-Options`, `Referrer-Policy`, HSTS en production — viennent de `next.config.mjs`.
 - **Injection de formule neutralisée à l'export CSV** : les noms de concurrents et les URL viennent de sorties de modèles, et toute cellule commençant par `=`, `+`, `-`, `@`, une tabulation ou un retour chariot est désamorcée avant d'être citée.
 - L'application **refuse de démarrer en production** avec les secrets d'exemple.
 
@@ -108,7 +108,7 @@ Détail du modèle de menace et procédure de signalement : [SECURITY.md](SECURI
 
 ## Stack
 
-Next.js 14 (App Router) · TypeScript strict · PostgreSQL 16 · Prisma 5 · NextAuth 4 · Tailwind CSS · Recharts · Vitest · Docker Compose. Aucune dépendance de file d'attente externe : la durabilité vient de Postgres.
+Next.js 16 (App Router) · React 19 · TypeScript strict · PostgreSQL 16 · Prisma 5 · NextAuth 4 · Tailwind CSS · Recharts · Vitest · Docker Compose. Aucune dépendance de file d'attente externe : la durabilité vient de Postgres.
 
 ## Arborescence
 

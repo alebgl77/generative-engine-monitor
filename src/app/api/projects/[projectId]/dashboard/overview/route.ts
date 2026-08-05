@@ -14,7 +14,7 @@ import type {
   SourceRow,
 } from "@/types/api";
 
-type RouteContext = { params: { projectId: string } };
+type RouteContext = { params: Promise<{ projectId: string }> };
 
 const TOP_SOURCES = 10;
 
@@ -67,7 +67,8 @@ interface CellAccumulator {
 }
 
 export async function GET(request: NextRequest, { params }: RouteContext) {
-  return withProject(request, params.projectId, async ({ project }) => {
+  const { projectId } = await params;
+  return withProject(request, projectId, async ({ project }) => {
     const totalQueries = await prisma.query.count({
       where: { projectId: project.id, isActive: true },
     });

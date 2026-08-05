@@ -23,6 +23,10 @@ const securityHeaders = [
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  // `next dev` otherwise writes AGENTS.md and CLAUDE.md at the repository root
+  // on every start. The project documents itself under docs/, and a generated
+  // file that reappears after deletion only shows up as a dirty tree.
+  agentRules: false,
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },

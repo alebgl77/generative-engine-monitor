@@ -10,7 +10,7 @@ import { getProvider } from "@/lib/providers/registry";
 import type { AIProvider, KeyValidation } from "@/lib/providers/types";
 import type { CredentialSummary } from "@/types/api";
 
-type RouteContext = { params: { credentialId: string } };
+type RouteContext = { params: Promise<{ credentialId: string }> };
 
 const VALIDATION_TIMEOUT_MS = 15_000;
 
@@ -57,9 +57,10 @@ async function checkKey(provider: AIProvider, apiKey: string): Promise<KeyValida
 /** POST re-checks a stored key against its provider. The plaintext exists only
  * inside this call: it is never returned, logged or audited. */
 export async function POST(request: NextRequest, { params }: RouteContext) {
+  const { credentialId } = await params;
   return withAuth(request, async ({ userId, ip, userAgent }) => {
     const credential = await prisma.providerCredential.findFirst({
-      where: { id: params.credentialId, userId },
+      where: { id: credentialId, userId },
       include: { provider: providerSelect },
     });
     if (!credential) throw notFound("Identifiant fournisseur");
@@ -111,9 +112,10 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
 }
 
 export async function DELETE(request: NextRequest, { params }: RouteContext) {
+  const { credentialId } = await params;
   return withAuth(request, async ({ userId, ip, userAgent }) => {
     const credential = await prisma.providerCredential.findFirst({
-      where: { id: params.credentialId, userId },
+      where: { id: credentialId, userId },
       include: { provider: providerSelect },
     });
     if (!credential) throw notFound("Identifiant fournisseur");

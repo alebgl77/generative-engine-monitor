@@ -8,7 +8,7 @@ import { AUDIT_ACTIONS, recordAudit } from "@/lib/audit";
 import { badRequest } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 
-type RouteContext = { params: { projectId: string } };
+type RouteContext = { params: Promise<{ projectId: string }> };
 
 const querySchema = z.object({
   format: z.enum(["csv", "json"]).default("csv"),
@@ -75,7 +75,8 @@ function formatNumber(value: number | null, digits: number): string {
 }
 
 export async function GET(request: NextRequest, { params }: RouteContext) {
-  return withProject(request, params.projectId, async ({ project, userId, ip, userAgent }) => {
+  const { projectId } = await params;
+  return withProject(request, projectId, async ({ project, userId, ip, userAgent }) => {
     const { format } = parseQuery(request, querySchema);
 
     // Partial and cancelled runs are exportable: they hold fewer measurements

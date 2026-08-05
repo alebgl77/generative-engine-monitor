@@ -7,7 +7,7 @@ import { badRequest, notFound } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import type { ProjectSummary } from "@/types/api";
 
-type RouteContext = { params: { projectId: string } };
+type RouteContext = { params: Promise<{ projectId: string }> };
 
 const domainSchema = z
   .string()
@@ -91,7 +91,8 @@ function toProjectSummary(p: ProjectRow): ProjectSummary {
 }
 
 export async function GET(request: NextRequest, { params }: RouteContext) {
-  return withProject(request, params.projectId, async ({ project }) => {
+  const { projectId } = await params;
+  return withProject(request, projectId, async ({ project }) => {
     const row = await prisma.project.findUnique({
       where: { id: project.id },
       include: projectShape,
@@ -102,7 +103,8 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
 }
 
 export async function PUT(request: NextRequest, { params }: RouteContext) {
-  return withProject(request, params.projectId, async ({ project }) => {
+  const { projectId } = await params;
+  return withProject(request, projectId, async ({ project }) => {
     const body = await parseBody(request, updateSchema);
 
     const data: Prisma.ProjectUpdateInput = {};
@@ -126,7 +128,8 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
 }
 
 export async function DELETE(request: NextRequest, { params }: RouteContext) {
-  return withProject(request, params.projectId, async ({ project }) => {
+  const { projectId } = await params;
+  return withProject(request, projectId, async ({ project }) => {
     await prisma.project.delete({ where: { id: project.id } });
     return json({ success: true });
   });

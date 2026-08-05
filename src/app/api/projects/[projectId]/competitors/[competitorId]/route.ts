@@ -6,7 +6,7 @@ import { assertBelongs, json, parseBody, withProject } from "@/lib/api/route-hel
 import { badRequest } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 
-type RouteContext = { params: { projectId: string; competitorId: string } };
+type RouteContext = { params: Promise<{ projectId: string; competitorId: string }> };
 
 const domainSchema = z
   .string()
@@ -43,8 +43,9 @@ async function assertCompetitorBelongs(projectId: string, competitorId: string):
 }
 
 export async function PUT(request: NextRequest, { params }: RouteContext) {
-  return withProject(request, params.projectId, async ({ project }) => {
-    await assertCompetitorBelongs(project.id, params.competitorId);
+  const { projectId, competitorId } = await params;
+  return withProject(request, projectId, async ({ project }) => {
+    await assertCompetitorBelongs(project.id, competitorId);
     const body = await parseBody(request, updateSchema);
 
     const data: Prisma.CompetitorUpdateInput = {};
@@ -55,7 +56,7 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
     if (Object.keys(data).length === 0) throw badRequest("Aucun champ à mettre à jour");
 
     const competitor = await prisma.competitor.update({
-      where: { id: params.competitorId },
+      where: { id: competitorId },
       data,
     });
     return json(competitor);
@@ -63,10 +64,11 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
 }
 
 export async function DELETE(request: NextRequest, { params }: RouteContext) {
-  return withProject(request, params.projectId, async ({ project }) => {
-    await assertCompetitorBelongs(project.id, params.competitorId);
+  const { projectId, competitorId } = await params;
+  return withProject(request, projectId, async ({ project }) => {
+    await assertCompetitorBelongs(project.id, competitorId);
     await prisma.competitor.deleteMany({
-      where: { id: params.competitorId, projectId: project.id },
+      where: { id: competitorId, projectId: project.id },
     });
     return json({ success: true });
   });

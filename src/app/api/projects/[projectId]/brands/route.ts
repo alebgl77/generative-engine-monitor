@@ -4,7 +4,7 @@ import { z } from "zod";
 import { json, parseBody, withProject } from "@/lib/api/route-helpers";
 import { prisma } from "@/lib/prisma";
 
-type RouteContext = { params: { projectId: string } };
+type RouteContext = { params: Promise<{ projectId: string }> };
 
 const domainSchema = z
   .string()
@@ -35,7 +35,8 @@ const createSchema = z.object({
 });
 
 export async function GET(request: NextRequest, { params }: RouteContext) {
-  return withProject(request, params.projectId, async ({ project }) => {
+  const { projectId } = await params;
+  return withProject(request, projectId, async ({ project }) => {
     const brands = await prisma.brand.findMany({
       where: { projectId: project.id },
       orderBy: { createdAt: "asc" },
@@ -45,7 +46,8 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
 }
 
 export async function POST(request: NextRequest, { params }: RouteContext) {
-  return withProject(request, params.projectId, async ({ project }) => {
+  const { projectId } = await params;
+  return withProject(request, projectId, async ({ project }) => {
     const body = await parseBody(request, createSchema);
 
     const brand = await prisma.brand.create({

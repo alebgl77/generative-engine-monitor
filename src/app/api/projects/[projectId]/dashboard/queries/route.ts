@@ -4,7 +4,7 @@ import { json, withProject } from "@/lib/api/route-helpers";
 import { prisma } from "@/lib/prisma";
 import type { QueriesResponse, QueryCell } from "@/types/api";
 
-type RouteContext = { params: { projectId: string } };
+type RouteContext = { params: Promise<{ projectId: string }> };
 
 function ratio(numerator: number, denominator: number): number {
   return denominator > 0 ? numerator / denominator : 0;
@@ -28,7 +28,8 @@ interface RowAccumulator {
 }
 
 export async function GET(request: NextRequest, { params }: RouteContext) {
-  return withProject(request, params.projectId, async ({ project }) => {
+  const { projectId } = await params;
+  return withProject(request, projectId, async ({ project }) => {
     // A partial or cancelled run measured fewer cells than planned; every cell it
     // did measure was paid for, and its status travels with the rows.
     const run = await prisma.run.findFirst({

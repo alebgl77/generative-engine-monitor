@@ -8,13 +8,14 @@ export default async function ProjectLayout({
   params,
 }: {
   children: React.ReactNode;
-  params: { projectId: string };
+  params: Promise<{ projectId: string }>;
 }) {
+  const { projectId } = await params;
   const session = await getServerAuth();
   if (!session) return notFound();
 
   const project = await prisma.project.findFirst({
-    where: { id: params.projectId, userId: session.user.id },
+    where: { id: projectId, userId: session.user.id },
     select: { id: true, name: true },
   });
 

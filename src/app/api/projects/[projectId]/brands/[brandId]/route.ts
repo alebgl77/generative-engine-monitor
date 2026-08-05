@@ -6,7 +6,7 @@ import { assertBelongs, json, parseBody, withProject } from "@/lib/api/route-hel
 import { badRequest } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 
-type RouteContext = { params: { projectId: string; brandId: string } };
+type RouteContext = { params: Promise<{ projectId: string; brandId: string }> };
 
 const domainSchema = z
   .string()
@@ -43,8 +43,9 @@ async function assertBrandBelongs(projectId: string, brandId: string): Promise<v
 }
 
 export async function PUT(request: NextRequest, { params }: RouteContext) {
-  return withProject(request, params.projectId, async ({ project }) => {
-    await assertBrandBelongs(project.id, params.brandId);
+  const { projectId, brandId } = await params;
+  return withProject(request, projectId, async ({ project }) => {
+    await assertBrandBelongs(project.id, brandId);
     const body = await parseBody(request, updateSchema);
 
     const data: Prisma.BrandUpdateInput = {};
@@ -54,15 +55,16 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
 
     if (Object.keys(data).length === 0) throw badRequest("Aucun champ à mettre à jour");
 
-    const brand = await prisma.brand.update({ where: { id: params.brandId }, data });
+    const brand = await prisma.brand.update({ where: { id: brandId }, data });
     return json(brand);
   });
 }
 
 export async function DELETE(request: NextRequest, { params }: RouteContext) {
-  return withProject(request, params.projectId, async ({ project }) => {
-    await assertBrandBelongs(project.id, params.brandId);
-    await prisma.brand.deleteMany({ where: { id: params.brandId, projectId: project.id } });
+  const { projectId, brandId } = await params;
+  return withProject(request, projectId, async ({ project }) => {
+    await assertBrandBelongs(project.id, brandId);
+    await prisma.brand.deleteMany({ where: { id: brandId, projectId: project.id } });
     return json({ success: true });
   });
 }

@@ -20,6 +20,11 @@ import type { NextFetchEvent, NextRequest } from "next/server";
  *
  * `strict-dynamic` lets the nonced bootstrap pull the chunks it needs without
  * enumerating them; browsers too old to understand it fall back to `self`.
+ *
+ * This is the `proxy` convention Next.js 16 renamed `middleware` to. It always
+ * runs on the Node.js runtime, so nothing here is confined to the edge sandbox
+ * any more; `next-auth/middleware` keeps its name because that is next-auth's
+ * own module path, not the file convention.
  */
 
 const isDev = process.env.NODE_ENV !== "production";
@@ -51,7 +56,7 @@ const requireSession = withAuth({
   pages: { signIn: "/login" },
 });
 
-export default async function middleware(request: NextRequest, event: NextFetchEvent) {
+export default async function proxy(request: NextRequest, event: NextFetchEvent) {
   const nonce = crypto.randomUUID().replace(/-/g, "");
   const csp = buildCsp(nonce);
 
