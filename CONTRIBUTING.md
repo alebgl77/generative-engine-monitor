@@ -26,16 +26,24 @@ Le moteur `mock` ne réclame aucune clé API : la chaîne complète — planific
 
 ## Avant d'ouvrir une pull request
 
-Les quatre commandes de la CI, dans l'ordre :
+Les cinq commandes de la CI, dans l'ordre :
 
 ```bash
+npm audit --audit-level=high
 npm run lint
 npm run typecheck
-npm run test
+npm run test:coverage
 npm run build
 ```
 
-La CI les exécute sur un PostgreSQL 16 éphémère après `prisma migrate deploy`.
+La CI les exécute sur un PostgreSQL 16 éphémère après `prisma migrate deploy`, et
+chacune est bloquante : un échec ferme la pull request, il n'y a pas d'étape
+tolérée.
+
+L'audit porte sur l'arbre complet, dépendances de développement comprises — les
+avis qui ont motivé cette étape vivaient dans l'outillage de test et de lint, que
+`--omit=dev` aurait masqué. Le seuil d'échec est `high` ; les avis modérés
+restent affichés dans le journal sans bloquer.
 
 ## Les couches de test
 

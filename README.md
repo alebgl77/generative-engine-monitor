@@ -138,6 +138,7 @@ src/
 | `npm run worker` | exécuteur d'analyses ; sans lui les runs restent en attente |
 | `npm run build` | build de production |
 | `npm run test` | suite Vitest |
+| `npm run test:coverage` | même suite, avec la couverture — c'est la forme qu'exécute la CI |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint via la configuration Next |
 | `npm run db:migrate` | crée et applique une migration en développement |

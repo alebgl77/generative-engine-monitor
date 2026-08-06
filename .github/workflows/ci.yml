@@ -45,6 +45,14 @@ jobs:
 
       - run: npm ci
 
+      # Blocking, and deliberately over the whole tree rather than `--omit=dev`:
+      # the advisories this gate was added for lived in the test and lint
+      # toolchain, which `--omit=dev` would have hidden. `high` is the failing
+      # threshold so a moderate advisory in a build-time-only package cannot
+      # wedge every branch overnight; it is still printed in the log.
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
+
       - run: npx prisma generate
 
       - name: Apply migrations
@@ -72,8 +80,11 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # Coverage rather than a bare `vitest run`: the coverage provider is a
+      # dependency like any other, and one that never runs in CI is one whose
+      # breakage surfaces on someone's laptop instead.
       - name: Test
-        run: npm run test
+        run: npm run test:coverage
 
       - name: Build
         run: npm run build
