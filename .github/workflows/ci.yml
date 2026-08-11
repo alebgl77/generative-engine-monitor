@@ -50,6 +50,12 @@ jobs:
       # toolchain, which `--omit=dev` would have hidden. `high` is the failing
       # threshold so a moderate advisory in a build-time-only package cannot
       # wedge every branch overnight; it is still printed in the log.
+      #
+      # It sits inline rather than in a job of its own because `verify` is a
+      # single cell, so the audit already runs exactly once per commit. Split
+      # out, it would buy nothing but a second checkout and `npm ci`; the day
+      # this workflow grows an OS/Node matrix, move it out so the matrix does
+      # not multiply one registry-identical result.
       - name: Audit dependencies
         run: npm audit --audit-level=high
 
