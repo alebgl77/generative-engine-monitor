@@ -2,7 +2,7 @@
  * Security headers that do not depend on the request.
  *
  * The Content-Security-Policy is deliberately absent here and is emitted by
- * src/middleware.ts instead: it carries a per-request nonce, and a second CSP
+ * src/proxy.ts instead: it carries a per-request nonce, and a second CSP
  * response header would be intersected with it by the browser, re-blocking the
  * very scripts the nonce exists to allow.
  */

@@ -9,6 +9,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Read-only by default. Nothing here publishes, comments or tags, and
+# actions/checkout leaves the job's token in .git/config where every subsequent
+# step — including the dependency install scripts — can read it.
+permissions:
+  contents: read
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -45,20 +51,6 @@ jobs:
 
       - run: npm ci
 
-      # Blocking, and deliberately over the whole tree rather than `--omit=dev`:
-      # the advisories this gate was added for lived in the test and lint
-      # toolchain, which `--omit=dev` would have hidden. `high` is the failing
-      # threshold so a moderate advisory in a build-time-only package cannot
-      # wedge every branch overnight; it is still printed in the log.
-      #
-      # It sits inline rather than in a job of its own because `verify` is a
-      # single cell, so the audit already runs exactly once per commit. Split
-      # out, it would buy nothing but a second checkout and `npm ci`; the day
-      # this workflow grows an OS/Node matrix, move it out so the matrix does
-      # not multiply one registry-identical result.
-      - name: Audit dependencies
-        run: npm audit --audit-level=high
-
       - run: npx prisma generate
 
       - name: Apply migrations
@@ -94,3 +86,24 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # Blocking, and last on purpose. An advisory is published by the outside
+      # world, not by the author of the branch it fails: putting this first
+      # meant one upstream disclosure erased the lint, type, test and build
+      # signal on every open branch at once. Run it after the checks the author
+      # can actually act on, so a red audit adds information instead of hiding
+      # it. This job is a single cell, so the audit still runs exactly once per
+      # commit; if this workflow ever grows an OS/Node matrix, move it to a job
+      # of its own rather than repeat one registry-identical query per cell.
+      #
+      # The whole tree is audited, not `--omit=dev`. That is not just because
+      # the advisories this gate was added for lived in the test and lint
+      # toolchain — it is because `Dockerfile` copies the full node_modules
+      # from the builder into the runner stage, so devDependencies genuinely
+      # ship to production here (the entrypoint needs the Prisma CLI, and the
+      # worker runs TypeScript through tsx). `--omit=dev` would therefore
+      # under-report real runtime exposure, and the threshold is `moderate`
+      # rather than `high` for the same reason: in this image there is no such
+      # thing as a build-time-only package.
+      - name: Audit dependencies
+        run: npm audit --audit-level=moderate

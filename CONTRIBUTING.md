@@ -29,21 +29,30 @@ Le moteur `mock` ne réclame aucune clé API : la chaîne complète — planific
 Les cinq commandes de la CI, dans l'ordre :
 
 ```bash
-npm audit --audit-level=high
 npm run lint
 npm run typecheck
 npm run test:coverage
 npm run build
+npm audit --audit-level=moderate
 ```
 
 La CI les exécute sur un PostgreSQL 16 éphémère après `prisma migrate deploy`, et
 chacune est bloquante : un échec ferme la pull request, il n'y a pas d'étape
 tolérée.
 
-L'audit porte sur l'arbre complet, dépendances de développement comprises — les
-avis qui ont motivé cette étape vivaient dans l'outillage de test et de lint, que
-`--omit=dev` aurait masqué. Le seuil d'échec est `high` ; les avis modérés
-restent affichés dans le journal sans bloquer.
+L'audit vient en dernier, à dessein. Un avis de sécurité est publié par le monde
+extérieur, pas par l'auteur de la branche qu'il fait échouer : placé en tête, il
+effaçait d'un coup les retours de lint, de typage, de test et de build sur toutes
+les branches ouvertes. Après eux, un audit rouge ajoute une information au lieu
+d'en masquer quatre.
+
+Il porte sur l'arbre complet, dépendances de développement comprises, et le seuil
+est `moderate`. Ce n'est pas un excès de zèle : le `Dockerfile` copie l'intégralité
+de `node_modules` de l'étage `builder` vers l'étage `runner` — l'entrypoint a
+besoin de la CLI Prisma et le worker exécute du TypeScript via tsx. Les
+dépendances de développement partent donc réellement en production ici, et
+`--omit=dev` sous-estimerait l'exposition réelle. Dans cette image, la catégorie
+« paquet de build uniquement » n'existe pas.
 
 ## Les couches de test
 
