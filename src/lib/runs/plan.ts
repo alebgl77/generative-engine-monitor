@@ -17,6 +17,9 @@ import { logger } from "@/lib/logger";
  * guess, and a worker crash cannot lose work that was never written down.
  */
 
+/** The fixture engine. Never planned alongside an engine that actually answers. */
+const MOCK_PROVIDER_CODE = "mock";
+
 export interface PlanResult {
   runId: string;
   totalTasks: number;
@@ -37,19 +40,34 @@ export async function planRun(projectId: string): Promise<PlanResult> {
     throw badRequest("Aucune requête active — ajoutez au moins une requête avant de lancer une analyse.");
   }
 
-  // The mock provider is always available: it needs no key, which is what makes
-  // the product demonstrable end to end without spending anything.
   const credentials = await prisma.providerCredential.findMany({
     where: { userId: project.userId, isValid: true },
     include: { provider: true },
   });
-  const mock = await prisma.provider.findUnique({ where: { code: "mock" } });
 
+  // The mock engine answers from fixtures, so its samples are not evidence — yet
+  // nothing downstream tells them apart: aggregateRun groups sample scores by
+  // mode alone, so a fixture answer lands in the run median, in the bootstrap
+  // interval, in n, and in every share-of-voice denominator, and its fixture URLs
+  // become citations carrying real domains. It exists to make the product
+  // demonstrable before a key is entered, which is exactly when it is the only
+  // engine available; planning it beside a real one would publish a measurement
+  // no provider produced.
+  //
+  // It is excluded here by code rather than by the absence of a credential: the
+  // demo seed gives it one, so filtering on credentials alone would let it back
+  // in through the very account most likely to be shown to someone.
   const byId = new Map<string, (typeof credentials)[number]["provider"]>();
   for (const c of credentials) {
-    if (c.provider.isActiveGlobal) byId.set(c.provider.id, c.provider);
+    if (c.provider.isActiveGlobal && c.provider.code !== MOCK_PROVIDER_CODE) {
+      byId.set(c.provider.id, c.provider);
+    }
   }
-  if (mock?.isActiveGlobal) byId.set(mock.id, mock);
+
+  if (byId.size === 0) {
+    const mock = await prisma.provider.findUnique({ where: { code: MOCK_PROVIDER_CODE } });
+    if (mock?.isActiveGlobal) byId.set(mock.id, mock);
+  }
 
   const providers = [...byId.values()];
   if (providers.length === 0) {

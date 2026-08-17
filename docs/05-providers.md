@@ -90,12 +90,14 @@ Les identifiants de modèle par défaut vivent dans `.env.example` et se surchar
 
 ## Le moteur `mock`
 
-Il n'exige aucune clé, n'est jamais écarté de la planification, et sert deux usages :
+Il n'exige aucune clé et sert deux usages :
 
 - **Démonstration à coût nul.** Ses fixtures produisent des réponses françaises réalistes sur un corpus de CRM, avec mentions multiples, ordres variables et sources citées, dans les deux modes. Toute la chaîne se démontre de bout en bout sans dépenser un centime.
 - **Détermination des tests.** Les réponses ne dépendent que de la requête et de l'indice de répétition, ce qui donne un pipeline observable sans réseau.
 
 Sa `validateKey` accepte tout, et son `defaultModel()` renvoie l'identifiant de fixture.
+
+**Il n'est planifié que tant que le projet ne dispose d'aucune clé valide.** Ses réponses sont des fixtures, mais rien en aval ne les distingue : `aggregateRun` regroupe les scores d'échantillon par mode seul, sans filtrer le moteur. Un échantillon `mock` entrerait donc dans la médiane du run, dans le bootstrap de l'intervalle de confiance, dans `n` et dans chaque dénominateur de part de voix, et ses URL de fixture deviendraient des citations portant de vrais domaines. Le planifier à côté d'un vrai moteur publierait une mesure qu'aucun fournisseur n'a produite.
 
 ## Couche HTTP commune
 
