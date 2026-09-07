@@ -4,17 +4,17 @@ import * as React from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
-  AlertCircle,
   ArrowDownRight,
   ArrowUpRight,
+  ArrowsClockwise,
   Globe,
+  GlobeHemisphereWest,
   Info,
   Minus,
   Play,
-  RefreshCw,
-  Radar,
   Users,
-} from "lucide-react";
+  WarningCircle,
+} from "@phosphor-icons/react";
 import {
   Bar,
   BarChart,
@@ -35,6 +35,8 @@ import type {
   RunCreatedResponse,
 } from "@/types/api";
 import { AxisCard, MODE_HINT, MODE_LABEL } from "@/components/dashboard/axis-card";
+import { SignalFindings } from "@/components/dashboard/signal-findings";
+import { useProjectIdentity } from "@/components/dashboard/project-identity";
 import {
   INTERVAL_HINT,
   LOW_N_CAVEAT,
@@ -73,43 +75,16 @@ const RUN_STATUS_LABEL: Record<RunStatus, string> = {
 /** Below this many points the two channels are treated as agreeing. */
 const GAP_NEUTRAL_BAND = 5;
 
-const FALLBACK_PALETTE = {
-  grounded: "hsl(220 70% 50%)",
-  parametric: "hsl(220 9% 46%)",
-  grid: "hsl(220 13% 91%)",
-  axis: "hsl(220 9% 46%)",
-  errorBar: "hsl(224 71% 4%)",
+const CHART_PALETTE = {
+  grounded: "hsl(var(--primary))",
+  parametric: "hsl(var(--muted-foreground))",
+  grid: "hsl(var(--border))",
+  axis: "hsl(var(--muted-foreground))",
+  errorBar: "hsl(var(--foreground))",
 };
-
-type ChartPalette = typeof FALLBACK_PALETTE;
-
-function useChartPalette(): ChartPalette {
-  const [palette, setPalette] = React.useState<ChartPalette>(FALLBACK_PALETTE);
-
-  React.useEffect(() => {
-    const styles = getComputedStyle(document.documentElement);
-    const read = (name: string, fallback: string) => {
-      const raw = styles.getPropertyValue(name).trim();
-      return raw ? `hsl(${raw})` : fallback;
-    };
-    setPalette({
-      grounded: read("--primary", FALLBACK_PALETTE.grounded),
-      parametric: read("--muted-foreground", FALLBACK_PALETTE.parametric),
-      grid: read("--border", FALLBACK_PALETTE.grid),
-      axis: read("--muted-foreground", FALLBACK_PALETTE.axis),
-      errorBar: read("--foreground", FALLBACK_PALETTE.errorBar),
-    });
-  }, []);
-
-  return palette;
-}
 
 function formatPercent(fraction: number): string {
   return `${Math.round(fraction * 100)} %`;
-}
-
-function intervalsOverlap(a: AxisSummary, b: AxisSummary): boolean {
-  return a.ciLow <= b.ciHigh && b.ciLow <= a.ciHigh;
 }
 
 export default function ProjectOverviewPage() {
@@ -117,19 +92,20 @@ export default function ProjectOverviewPage() {
   const projectId = params.projectId;
   const router = useRouter();
   const { toast } = useToast();
+  const { projectName } = useProjectIdentity();
 
   const [state, setState] = React.useState<LoadState>({ status: "loading" });
   const [launching, setLaunching] = React.useState(false);
   const [skipped, setSkipped] = React.useState<RunCreatedResponse["skipped"]>([]);
   const requestRef = React.useRef(0);
 
-  const load = React.useCallback(async () => {
+  const load = React.useCallback(async (signal?: AbortSignal) => {
     const requestId = ++requestRef.current;
     setState({ status: "loading" });
     try {
       const res = await fetch(
         `/api/projects/${projectId}/dashboard/overview`,
-        { cache: "no-store" }
+        { cache: "no-store", signal }
       );
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as ApiErrorResponse | null;
@@ -139,6 +115,7 @@ export default function ProjectOverviewPage() {
       if (requestId !== requestRef.current) return;
       setState({ status: "ready", data });
     } catch (error) {
+      if (signal?.aborted) return;
       if (requestId !== requestRef.current) return;
       setState({
         status: "error",
@@ -151,7 +128,12 @@ export default function ProjectOverviewPage() {
   }, [projectId]);
 
   React.useEffect(() => {
-    void load();
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => void load(controller.signal), 0);
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
   }, [load]);
 
   async function launchRun() {
@@ -203,10 +185,10 @@ export default function ProjectOverviewPage() {
 
   if (state.status === "error") {
     return (
-      <Card className="border-destructive/40">
+      <Card className="rounded-[10px] border-destructive/40 bg-card shadow-none">
         <CardHeader>
           <div className="flex items-center gap-2">
-            <AlertCircle className="h-5 w-5 text-destructive" aria-hidden />
+            <WarningCircle size={20} weight="regular" className="text-destructive" aria-hidden />
             <CardTitle className="text-base">
               Les résultats n&apos;ont pas pu être chargés
             </CardTitle>
@@ -215,7 +197,7 @@ export default function ProjectOverviewPage() {
         </CardHeader>
         <CardContent>
           <Button variant="outline" size="sm" onClick={() => void load()}>
-            <RefreshCw className="mr-2 h-4 w-4" aria-hidden />
+            <ArrowsClockwise size={16} weight="regular" className="mr-2" aria-hidden />
             Réessayer
           </Button>
         </CardContent>
@@ -227,8 +209,9 @@ export default function ProjectOverviewPage() {
 
   if (!data.latestRun) {
     return (
-      <Card>
+      <Card className="rounded-[10px] border-foreground/30 bg-card shadow-none">
         <CardHeader>
+          <p className="ledger-kicker">Registre vide</p>
           <CardTitle className="text-lg">Aucune analyse disponible</CardTitle>
           <CardDescription>
             Configurez votre marque, vos concurrents et vos requêtes, puis
@@ -245,7 +228,7 @@ export default function ProjectOverviewPage() {
             Configurer le projet
           </Button>
           <Button onClick={() => void launchRun()} disabled={launching}>
-            <Play className="mr-2 h-4 w-4" aria-hidden />
+            <Play size={16} weight="regular" className="mr-2" aria-hidden />
             {launching ? "Lancement…" : "Lancer une analyse"}
           </Button>
         </CardContent>
@@ -256,45 +239,56 @@ export default function ProjectOverviewPage() {
   const { latestRun } = data;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-          <Badge variant="secondary">
-            {RUN_STATUS_LABEL[latestRun.status]}
-          </Badge>
-          <span className="tabular-nums">
-            {latestRun.progress.doneSamples}/{latestRun.progress.totalSamples}{" "}
-            appels
-          </span>
-          {latestRun.progress.failedSamples > 0 && (
-            <span className="tabular-nums text-destructive">
-              {latestRun.progress.failedSamples} en échec
+    <div className="ledger-enter space-y-12">
+      <header className="grid gap-6 border-b border-foreground/70 pb-7 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+        <div>
+          <p className="ledger-kicker">Dernier relevé · preuves API</p>
+          <h2 className="mt-2 max-w-3xl text-4xl font-semibold leading-[0.95] tracking-[-0.055em] sm:text-5xl">
+            État des signaux
+          </h2>
+          <div className="mt-5 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-muted-foreground">
+            <span className="ledger-tag">{RUN_STATUS_LABEL[latestRun.status]}</span>
+            <span className="font-mono tabular-nums">
+              {latestRun.progress.doneSamples}/{latestRun.progress.totalSamples} appels
             </span>
-          )}
-          <span>·</span>
-          <span>{data.totalQueries} requêtes</span>
-          <span>·</span>
-          <Tooltip content="Version de l'algorithme de score utilisée pour ces résultats. Les runs scorés avec des versions différentes ne se comparent pas directement.">
-            <span className="underline decoration-dotted underline-offset-2">
-              scoring {data.scoringVersion}
-            </span>
-          </Tooltip>
+            {latestRun.progress.failedSamples > 0 ? (
+              <span className="font-mono tabular-nums text-destructive">
+                {latestRun.progress.failedSamples} en échec
+              </span>
+            ) : null}
+            <span aria-hidden>·</span>
+            <span>{data.totalQueries} requêtes</span>
+            <span aria-hidden>·</span>
+            <Tooltip content="Version de l'algorithme de score utilisée pour ces résultats. Les runs scorés avec des versions différentes ne se comparent pas directement.">
+              <span className="font-mono underline decoration-dotted underline-offset-4">
+                scoring {data.scoringVersion}
+              </span>
+            </Tooltip>
+            {latestRun.completedAt ? (
+              <>
+                <span aria-hidden>·</span>
+                <time dateTime={latestRun.completedAt} className="font-mono">
+                  {new Date(latestRun.completedAt).toLocaleString("fr-FR")}
+                </time>
+              </>
+            ) : null}
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" onClick={() => void load()}>
-            <RefreshCw className="mr-2 h-4 w-4" aria-hidden />
+        <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+          <Button variant="ghost" size="sm" onClick={() => void load()} className="rounded-sm">
+            <ArrowsClockwise size={16} weight="regular" className="mr-2" aria-hidden />
             Actualiser
           </Button>
-          <Button onClick={() => void launchRun()} disabled={launching}>
-            <Play className="mr-2 h-4 w-4" aria-hidden />
+          <Button onClick={() => void launchRun()} disabled={launching} className="rounded-sm">
+            <Play size={16} weight="regular" className="mr-2" aria-hidden />
             {launching ? "Lancement…" : "Nouvelle analyse"}
           </Button>
         </div>
-      </div>
+      </header>
 
       {skipped.length > 0 && (
-        <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm">
-          <Info className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+        <div className="flex items-start gap-2 border-l-2 border-primary bg-card px-4 py-3 text-sm">
+          <Info size={16} weight="regular" className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden />
           <div>
             <p className="font-medium">Cellules ignorées lors du lancement</p>
             <ul className="mt-1 space-y-0.5 text-muted-foreground">
@@ -309,65 +303,122 @@ export default function ProjectOverviewPage() {
         </div>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2">
-        <AxisCard
-          title="Visibilité groundée"
-          explanation="Ce que les moteurs vont chercher en direct, recherche web activée."
-          summary={data.grounded}
-          icon={Radar}
-          hint={MODE_HINT.GROUNDED}
-          emptyMessage="Aucune cellule groundée sur le dernier run : aucun moteur configuré ne sert ce mode."
-        />
-        <AxisCard
-          title="Visibilité paramétrique"
-          explanation="Ce que les modèles ont retenu de leur entraînement, sans recherche web."
-          summary={data.parametric}
-          icon={Users}
-          hint={MODE_HINT.PARAMETRIC}
-          emptyMessage="Aucune cellule paramétrique sur le dernier run."
-        />
-      </div>
-
-      <RetrievalGapCard
-        gap={data.retrievalGap}
-        grounded={data.grounded}
-        parametric={data.parametric}
+      <SignalFindings
+        key={`${projectId}:${latestRun.id}:${data.scoringVersion}`}
+        projectId={projectId}
+        projectName={projectName}
+        brandNames={data.shareOfVoice
+          .filter((entity) => entity.kind === "BRAND")
+          .map((entity) => entity.name)
+          .sort()}
+        scoringVersion={data.scoringVersion}
+        latestRun={latestRun}
       />
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <ShareOfVoiceCard entities={data.shareOfVoice} />
-        <ProviderModeCard scores={data.scoreByProviderMode} />
-      </div>
+      <section aria-labelledby="axes-title" className="ledger-section">
+        <div className="ledger-section-heading">
+          <div>
+            <p className="ledger-kicker">01 · Calibration</p>
+            <h2 id="axes-title">Deux canaux, deux lectures</h2>
+          </div>
+          <p className="ledger-section-note">
+            Médianes, intervalles, stabilité et effectifs restent visibles : le
+            score seul ne suffit pas à qualifier un signal.
+          </p>
+        </div>
+        <div className="grid gap-4 md:grid-cols-[1.14fr_.86fr]">
+          <AxisCard
+            title="Visibilité groundée"
+            explanation="Ce que les moteurs récupèrent via leur recherche web native dans les appels API observés."
+            summary={data.grounded}
+            icon={GlobeHemisphereWest}
+            hint={MODE_HINT.GROUNDED}
+            emptyMessage="Aucune cellule groundée sur le dernier run : aucun moteur configuré ne sert ce mode."
+            className="rounded-[10px] border-foreground/30 bg-card shadow-none"
+          />
+          <AxisCard
+            title="Visibilité paramétrique"
+            explanation="Ce que les modèles restituent sans recherche web dans les appels API observés."
+            summary={data.parametric}
+            icon={Users}
+            hint={MODE_HINT.PARAMETRIC}
+            emptyMessage="Aucune cellule paramétrique sur le dernier run."
+            className="rounded-[10px] border-foreground/30 bg-card shadow-none"
+          />
+        </div>
+      </section>
 
-      <TopSourcesCard sources={data.topSources} projectId={projectId} />
+      <section aria-label="Écart de récupération" className="ledger-section">
+        <RetrievalGapCard
+          gap={data.retrievalGap}
+          retrieval={data.retrieval}
+          grounded={data.grounded}
+          parametric={data.parametric}
+        />
+      </section>
+
+      <section aria-labelledby="terrain-title" className="ledger-section">
+        <div className="ledger-section-heading">
+          <div>
+            <p className="ledger-kicker">02 · Terrain observé</p>
+            <h2 id="terrain-title">Voix et moteurs</h2>
+          </div>
+          <p className="ledger-section-note">
+            Occupation des réponses et distribution par fournisseur, sur le run
+            courant uniquement.
+          </p>
+        </div>
+        <div className="grid gap-4 lg:grid-cols-[.82fr_1.18fr]">
+          <ShareOfVoiceCard entities={data.shareOfVoice} />
+          <ProviderModeCard scores={data.scoreByProviderMode} />
+        </div>
+      </section>
+
+      <section aria-labelledby="sources-title" className="ledger-section">
+        <div className="ledger-section-heading">
+          <div>
+            <p className="ledger-kicker">03 · Provenance</p>
+            <h2 id="sources-title">Sources citées</h2>
+          </div>
+          <p className="ledger-section-note">
+            Les domaines sont issus des citations du run, jamais d’une liste
+            déclarative ou simulée.
+          </p>
+        </div>
+        <TopSourcesCard sources={data.topSources} projectId={projectId} />
+      </section>
     </div>
   );
 }
 
 function OverviewSkeleton() {
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <Skeleton className="h-6 w-72" />
+    <div className="space-y-12" aria-label="Chargement du relevé">
+      <div className="flex items-end justify-between border-b border-foreground/30 pb-7">
+        <div className="space-y-3">
+          <Skeleton className="h-3 w-36 rounded-sm" />
+          <Skeleton className="h-12 w-72 max-w-[80vw] rounded-md" />
+        </div>
         <Skeleton className="h-10 w-40" />
       </div>
-      <div className="grid gap-4 md:grid-cols-2">
-        <Skeleton className="h-52 w-full" />
-        <Skeleton className="h-52 w-full" />
+      <div className="grid gap-5 lg:grid-cols-[1.08fr_.92fr]">
+        <div className="space-y-2">
+          <Skeleton className="h-24 w-full rounded-md" />
+          <Skeleton className="h-24 w-full rounded-md" />
+          <Skeleton className="h-24 w-full rounded-md" />
+        </div>
+        <Skeleton className="h-80 w-full rounded-[10px]" />
       </div>
-      <Skeleton className="h-40 w-full" />
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Skeleton className="h-72 w-full" />
-        <Skeleton className="h-72 w-full" />
+      <div className="grid gap-4 md:grid-cols-[1.14fr_.86fr]">
+        <Skeleton className="h-52 w-full rounded-[10px]" />
+        <Skeleton className="h-52 w-full rounded-[10px]" />
       </div>
-      <Skeleton className="h-56 w-full" />
+      <Skeleton className="h-48 w-full rounded-[10px]" />
     </div>
   );
 }
 
 interface GapReading {
-  headline: string;
-  sentence: string;
   icon: typeof ArrowUpRight;
   text: string;
   border: string;
@@ -376,46 +427,39 @@ interface GapReading {
 function readGap(gap: number): GapReading {
   if (gap > GAP_NEUTRAL_BAND) {
     return {
-      headline: "La récupération vous porte",
-      sentence:
-        "Les moteurs vous trouvent mieux lorsqu'ils cherchent que lorsqu'ils s'en remettent à leur mémoire : l'investissement contenu paie, continuez à alimenter les pages qu'ils lisent.",
       icon: ArrowUpRight,
-      text: "text-emerald-600",
-      border: "border-emerald-500/40",
+      text: "text-primary",
+      border: "border-primary/60",
     };
   }
   if (gap < -GAP_NEUTRAL_BAND) {
     return {
-      headline: "Les modèles vous connaissent, mais ne vous citent plus",
-      sentence:
-        "Votre notoriété est acquise dans les modèles, mais dès qu'ils cherchent en direct vous perdez du terrain : le levier n'est pas la notoriété, ce sont les sources qu'ils lisent.",
       icon: ArrowDownRight,
-      text: "text-red-600",
-      border: "border-red-500/40",
+      text: "text-primary",
+      border: "border-primary/60",
     };
   }
   return {
-    headline: "Les deux canaux s'accordent",
-    sentence:
-      "Mémoire d'entraînement et recherche en direct donnent le même verdict : aucun écart à exploiter, c'est le niveau absolu de visibilité qu'il faut faire monter.",
     icon: Minus,
     text: "text-muted-foreground",
-    border: "border-border",
+    border: "border-foreground/30",
   };
 }
 
 function RetrievalGapCard({
   gap,
+  retrieval,
   grounded,
   parametric,
 }: {
   gap: number | null;
+  retrieval: OverviewResponse["retrieval"];
   grounded: AxisSummary | null;
   parametric: AxisSummary | null;
 }) {
   if (gap === null || !grounded || !parametric) {
     return (
-      <Card>
+      <Card className="rounded-[10px] border-foreground/30 bg-card shadow-none">
         <CardHeader>
           <CardTitle className="text-base">Écart de récupération</CardTitle>
           <CardDescription>
@@ -430,15 +474,16 @@ function RetrievalGapCard({
 
   const reading = readGap(gap);
   const Icon = reading.icon;
-  const overlapping = intervalsOverlap(grounded, parametric);
-  const uncertain = grounded.lowN || parametric.lowN;
+  const hasInterval = retrieval?.ciLow != null && retrieval?.ciHigh != null;
+  const overlapping = !hasInterval || (retrieval!.ciLow! <= 0 && retrieval!.ciHigh! >= 0);
+  const uncertain = !hasInterval || retrieval?.lowN !== false;
 
   return (
-    <Card className={cn("border-2", reading.border)}>
+    <Card className={cn("rounded-[10px] border bg-card shadow-none", reading.border)}>
       <CardHeader className="pb-3">
         <div className="flex items-center gap-2">
           <CardTitle className="text-base">Écart de récupération</CardTitle>
-          <InfoTooltip label="Médiane groundée moins médiane paramétrique, en points de score. C'est la métrique qui dit où agir : sur le contenu que les moteurs vont chercher, ou sur les sources qui font autorité pour eux." />
+          <InfoTooltip label="Moyenne des différences groundé − paramétrique dans les mêmes cellules requête/API, puis poids égal des requêtes. Les fournisseurs mono-mode sont exclus. Comparaison descriptive, pas effet causal ni expérience des interfaces publiques." />
         </div>
         <CardDescription>
           Visibilité groundée − visibilité paramétrique
@@ -447,7 +492,7 @@ function RetrievalGapCard({
       <CardContent className="space-y-4">
         <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
           <div className="flex items-baseline gap-2">
-            <Icon className={cn("h-7 w-7", reading.text)} aria-hidden />
+            <Icon size={28} weight="regular" className={reading.text} aria-hidden />
             <span
               className={cn(
                 "text-5xl font-semibold tabular-nums leading-none",
@@ -471,22 +516,25 @@ function RetrievalGapCard({
         </div>
 
         <p className={cn("text-sm font-medium", reading.text)}>
-          {reading.headline}
+{uncertain || overlapping ? "Écart descriptif, interprétation prudente" : "Différence observée sur le panel API apparié"}
         </p>
         <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">
-          {reading.sentence}
+Cette comparaison porte sur les réponses API et les paramètres de ce run, pas sur une part de marché ou une expérience publique personnalisée. Le sens de l&apos;écart n&apos;établit pas sa cause.
         </p>
 
+        <p className="text-xs text-muted-foreground">
+          {retrieval?.pairedQueries ?? 0} requêtes appariées · {retrieval?.pairedCells ?? 0} cellules · {retrieval?.excludedModeOnlyCells ?? 0} cellules mono-mode exclues.
+          {hasInterval ? ` IC apparié : ${retrieval!.ciLow!.toFixed(1)} – ${retrieval!.ciHigh!.toFixed(1)}` : " IC apparié indisponible."}
+        </p>
         {overlapping && (
           <p className="flex items-start gap-1.5 rounded-md border border-border bg-muted/50 px-3 py-2 text-xs leading-snug text-muted-foreground">
-            <Info className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
-            Les intervalles des deux axes se recouvrent : l&apos;écart n&apos;est
-            pas départageable en l&apos;état, augmentez le nombre de répétitions
-            avant d&apos;en tirer une décision.
+            <Info size={14} weight="regular" className="mt-px shrink-0" aria-hidden />
+            L&apos;intervalle apparié est indisponible ou contient zéro : aucune conclusion de différence.
+            Des requêtes distinctes supplémentaires peuvent améliorer la mesure ; répéter les mêmes questions n&apos;augmente pas l&apos;effectif indépendant.
           </p>
         )}
         {uncertain && (
-          <p className="text-xs italic text-amber-600">{LOW_N_CAVEAT}</p>
+          <p className="text-xs italic text-primary">{LOW_N_CAVEAT}</p>
         )}
       </CardContent>
     </Card>
@@ -502,7 +550,7 @@ function ShareOfVoiceCard({
   const max = ranked.reduce((acc, e) => Math.max(acc, e.mentionShare), 0);
 
   return (
-    <Card>
+    <Card className="rounded-[10px] border-foreground/30 bg-card shadow-none">
       <CardHeader className="pb-3">
         <div className="flex items-center gap-2">
           <CardTitle className="text-base">Part de voix</CardTitle>
@@ -538,7 +586,7 @@ function ShareOfVoiceCard({
                         {entity.name}
                       </span>
                       {isBrand && (
-                        <Badge variant="default" className="shrink-0">
+                        <Badge variant="default" className="shrink-0 rounded-sm">
                           Votre marque
                         </Badge>
                       )}
@@ -547,10 +595,10 @@ function ShareOfVoiceCard({
                       {formatPercent(entity.mentionShare)}
                     </span>
                   </div>
-                  <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                  <div className="h-2 w-full overflow-hidden rounded-sm bg-muted">
                     <div
                       className={cn(
-                        "h-full rounded-full",
+                        "h-full rounded-sm",
                         isBrand ? "bg-primary" : "bg-muted-foreground/50"
                       )}
                       style={{ width: `${width}%` }}
@@ -582,7 +630,8 @@ interface ChartRow {
   PARAMETRIC_meta?: ProviderModeScore;
 }
 
-function deviations(score: ProviderModeScore): [number, number] {
+function deviations(score: ProviderModeScore): [number, number] | undefined {
+  if (score.median === null || score.ciLow === null || score.ciHigh === null) return undefined;
   return [
     Math.max(0, score.median - score.ciLow),
     Math.max(0, score.ciHigh - score.median),
@@ -599,11 +648,11 @@ function buildChartRows(scores: ProviderModeScore[]): ChartRow[] {
       order.push(score.providerCode);
     }
     if (score.mode === "GROUNDED") {
-      row.GROUNDED = score.median;
+      row.GROUNDED = score.median ?? undefined;
       row.GROUNDED_error = deviations(score);
       row.GROUNDED_meta = score;
     } else {
-      row.PARAMETRIC = score.median;
+      row.PARAMETRIC = score.median ?? undefined;
       row.PARAMETRIC_error = deviations(score);
       row.PARAMETRIC_meta = score;
     }
@@ -626,7 +675,7 @@ function ChartTooltip({ active, payload }: ChartTooltipProps) {
   );
 
   return (
-    <div className="rounded-md border bg-popover px-3 py-2 text-xs shadow-md">
+    <div className="rounded-md border border-foreground/30 bg-popover px-3 py-2 text-xs shadow-none">
       <p className="mb-1 font-medium text-popover-foreground">{row.provider}</p>
       {entries.map((meta) => (
         <p key={meta.mode} className="tabular-nums text-muted-foreground">
@@ -640,12 +689,12 @@ function ChartTooltip({ active, payload }: ChartTooltipProps) {
 }
 
 function ProviderModeCard({ scores }: { scores: ProviderModeScore[] }) {
-  const palette = useChartPalette();
+  const palette = CHART_PALETTE;
   const rows = React.useMemo(() => buildChartRows(scores), [scores]);
   const hasLowN = scores.some((score) => score.lowN);
 
   return (
-    <Card>
+    <Card className="rounded-[10px] border-foreground/30 bg-card shadow-none">
       <CardHeader className="pb-3">
         <div className="flex items-center gap-2">
           <CardTitle className="text-base">
@@ -681,8 +730,9 @@ function ProviderModeCard({ scores }: { scores: ProviderModeScore[] }) {
                 {MODE_LABEL.PARAMETRIC}
               </span>
             </div>
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={rows} margin={{ top: 8, right: 8, bottom: 0, left: -20 }}>
+            <div aria-hidden="true">
+              <ResponsiveContainer width="100%" height={260}>
+                <BarChart data={rows} margin={{ top: 8, right: 8, bottom: 0, left: -20 }}>
                 <CartesianGrid
                   strokeDasharray="3 3"
                   stroke={palette.grid}
@@ -742,10 +792,47 @@ function ProviderModeCard({ scores }: { scores: ProviderModeScore[] }) {
                     direction="y"
                   />
                 </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            <table className="sr-only">
+              <caption>
+                Scores par fournisseur et par mode, avec support de mesure
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Fournisseur</th>
+                  <th scope="col">Mode</th>
+                  <th scope="col">Médiane</th>
+                  <th scope="col">Intervalle</th>
+                  <th scope="col">Effectif</th>
+                  <th scope="col">Méthode</th>
+                  <th scope="col">Faible effectif</th>
+                </tr>
+              </thead>
+              <tbody>
+                {scores.map((score) => (
+                  <tr key={`${score.providerCode}-${score.mode}`}>
+                    <th scope="row">{score.providerLabel}</th>
+                    <td>{MODE_LABEL[score.mode]}</td>
+                    <td>{formatScore(score)}</td>
+                    <td>{formatInterval(score)}</td>
+                    <td>
+                      n = {score.n}{" "}
+                      {score.nUnit === "queries"
+                        ? "requêtes"
+                        : score.nUnit === "samples"
+                          ? "échantillons"
+                          : "unité indisponible"}
+                    </td>
+                    <td>{score.ciMethod ?? "indisponible"}</td>
+                    <td>{score.lowN ? "oui" : "non"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
             {hasLowN && (
-              <p className="mt-2 text-[11px] italic text-amber-600">
+              <p className="mt-2 text-[11px] italic text-primary">
                 Les barres translucides reposent sur un {LOW_N_CAVEAT}.
               </p>
             )}
@@ -766,10 +853,10 @@ function TopSourcesCard({
   const max = sources.reduce((acc, s) => Math.max(acc, s.citationShare), 0);
 
   return (
-    <Card>
+    <Card className="rounded-[10px] border-foreground/30 bg-card shadow-none">
       <CardHeader className="pb-3">
         <div className="flex items-center gap-2">
-          <Globe className="h-4 w-4 text-muted-foreground" aria-hidden />
+          <Globe size={16} weight="regular" className="text-muted-foreground" aria-hidden />
           <CardTitle className="text-base">Sources les plus citées</CardTitle>
         </div>
         <CardDescription>
@@ -788,7 +875,7 @@ function TopSourcesCard({
               <li
                 key={source.domain}
                 className={cn(
-                  "flex items-center gap-3 rounded-md border px-3 py-2",
+                  "flex items-center gap-3 rounded-sm border px-3 py-2",
                   source.isBrandDomain
                     ? "border-primary/50 bg-primary/5"
                     : "border-transparent bg-muted/40"
@@ -799,15 +886,15 @@ function TopSourcesCard({
                     {source.domain}
                   </span>
                   {source.isBrandDomain && (
-                    <Badge variant="default" className="shrink-0">
+                    <Badge variant="default" className="shrink-0 rounded-sm">
                       Votre domaine
                     </Badge>
                   )}
                 </span>
-                <span className="hidden h-2 w-32 overflow-hidden rounded-full bg-muted sm:block">
+                <span className="hidden h-2 w-32 overflow-hidden rounded-sm bg-muted sm:block">
                   <span
                     className={cn(
-                      "block h-full rounded-full",
+                      "block h-full rounded-sm",
                       source.isBrandDomain
                         ? "bg-primary"
                         : "bg-muted-foreground/50"

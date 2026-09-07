@@ -42,7 +42,8 @@ const DEMO_COMPETITORS = [
   { name: "Axonaut", domain: "axonaut.com", aliases: [] as string[] },
 ];
 
-async function seedProviders() {
+/** Production bootstrap fills missing reference data without resetting operators' settings. */
+export async function seedProviders(preserveExisting = getEnv().NODE_ENV === "production") {
   for (const p of PROVIDERS) {
     const data = {
       label: p.label,
@@ -52,18 +53,18 @@ async function seedProviders() {
       rpmLimit: p.rpm,
       maxConcurrency: p.concurrency,
     };
-    await prisma.provider.upsert({
+    const provider = await prisma.provider.upsert({
       where: { code: p.code },
-      update: data,
+      update: preserveExisting ? {} : data,
       create: { code: p.code, ...data },
     });
 
     const key = `provider:${p.code}`;
-    const refillPerSec = p.rpm / 60;
+    const refillPerSec = provider.rpmLimit / 60;
     await prisma.rateLimitBucket.upsert({
       where: { key },
-      update: { capacity: p.rpm, refillPerSec },
-      create: { key, capacity: p.rpm, tokens: p.rpm, refillPerSec },
+      update: preserveExisting ? {} : { capacity: provider.rpmLimit, refillPerSec },
+      create: { key, capacity: provider.rpmLimit, tokens: provider.rpmLimit, refillPerSec },
     });
   }
   console.log(`Seeded ${PROVIDERS.length} providers and their rate-limit buckets.`);
@@ -154,9 +155,11 @@ async function main() {
   }
 }
 
-main()
-  .catch((err) => {
-    console.error(err);
-    process.exit(1);
-  })
-  .finally(() => prisma.$disconnect());
+if (typeof require !== "undefined" && require.main === module) {
+  main()
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    })
+    .finally(() => prisma.$disconnect());
+}

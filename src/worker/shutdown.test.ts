@@ -16,7 +16,7 @@ function pending(id: string): InFlightJob & { settle: () => void } {
   const done = new Promise<void>((resolve) => {
     settle = resolve;
   });
-  return { id, controller, done, settle };
+  return { id, lease: { id, runId: "r1", lockedBy: "w1", leaseVersion: 4 }, controller, done, settle };
 }
 
 let exit: MockInstance<(code?: string | number | null | undefined) => never>;
@@ -72,7 +72,7 @@ describe("installShutdownHandlers", () => {
     await vi.advanceTimersByTimeAsync(LEASE.shutdownGraceSec * 1000 + 5_000);
 
     expect(job.controller.signal.aborted).toBe(true);
-    expect(mocks.release).toHaveBeenCalledWith("j1");
+    expect(mocks.release).toHaveBeenCalledWith(job.lease);
     expect(exit).toHaveBeenCalledWith(0);
   });
 
@@ -99,5 +99,13 @@ describe("installShutdownHandlers", () => {
     process.emit("SIGINT");
 
     expect(exit).toHaveBeenCalledWith(1);
+  });
+  it("clears health at shutdown before releasing leases", async () => {
+    const clearHealth = vi.fn().mockResolvedValue(undefined);
+    installShutdownHandlers(new AbortController(), () => [], clearHealth);
+    process.emit("SIGTERM");
+    await vi.advanceTimersByTimeAsync(100);
+    expect(clearHealth).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(0);
   });
 });

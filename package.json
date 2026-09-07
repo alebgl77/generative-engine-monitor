@@ -11,6 +11,7 @@
     "build": "next build",
     "start": "next start",
     "worker": "tsx src/worker/main.ts",
+    "worker:health": "node scripts/worker-health.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -25,11 +26,13 @@
     "setup": "npm install && prisma generate && prisma migrate deploy"
   },
   "dependencies": {
+    "@phosphor-icons/react": "2.1.10",
     "@prisma/client": "^5.22.0",
     "bcryptjs": "^3.0.3",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.0",
     "dotenv": "^16.4.5",
+    "geist": "1.7.2",
     "lucide-react": "^1.28.0",
     "next": "16.3.0",
     "next-auth": "^4.24.15",

@@ -1,13 +1,15 @@
 import type { NextRequest } from "next/server";
-import type { RunScore, SamplingMode } from "@prisma/client";
+import type { SamplingMode } from "@prisma/client";
 
 import { json, withProject } from "@/lib/api/route-helpers";
 import { prisma } from "@/lib/prisma";
 import { getScoringVersion } from "@/lib/scoring/registry";
-import { aggregate, seedFor } from "@/lib/scoring/stats";
+import { seedFor } from "@/lib/scoring/stats";
+import { clusterBootstrap, pairedRetrievalDelta, type ClusterObservation } from "@/lib/scoring/cluster-stats";
+import { runForReading, analysisCoverage, toAxisSummary } from "@/lib/scoring/read-model";
+import { readRunSnapshot } from "@/lib/runs/snapshots";
 import { LOW_N_RUN } from "@/lib/scoring/types";
 import type {
-  AxisSummary,
   EntityShare,
   OverviewResponse,
   ProviderModeScore,
@@ -18,18 +20,6 @@ type RouteContext = { params: Promise<{ projectId: string }> };
 
 const TOP_SOURCES = 10;
 
-function toAxisSummary(score: RunScore | undefined): AxisSummary | null {
-  if (!score) return null;
-  return {
-    median: score.median,
-    ciLow: score.ciLow,
-    ciHigh: score.ciHigh,
-    stability: score.stability,
-    n: score.n,
-    lowN: score.lowN,
-    brandPresenceRate: score.brandPresenceRate,
-  };
-}
 
 function ratio(numerator: number, denominator: number): number {
   return denominator > 0 ? numerator / denominator : 0;
@@ -62,7 +52,7 @@ interface CellAccumulator {
   providerLabel: string;
   mode: SamplingMode;
   /** Individual sample scores, so `n` counts the same unit everywhere. */
-  scores: number[];
+  scores: ClusterObservation[];
   present: number;
 }
 
@@ -70,17 +60,17 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
   const { projectId } = await params;
   return withProject(request, projectId, async ({ project }) => {
     const totalQueries = await prisma.query.count({
-      where: { projectId: project.id, isActive: true },
+      where: { projectId: project.id, isActive: true, archivedAt: null },
     });
 
     // PARTIAL counts: a run with failed samples still measured everything else,
     // and hiding it would leave the dashboard empty for the wrong reason.
-    const run = await prisma.run.findFirst({
+    const originalRun = await prisma.run.findFirst({
       where: { projectId: project.id, status: { in: ["COMPLETED", "PARTIAL"] } },
       orderBy: { createdAt: "desc" },
     });
 
-    if (!run) {
+    if (!originalRun) {
       const empty: OverviewResponse = {
         scoringVersion: project.activeScoringVersion,
         latestRun: null,
@@ -95,20 +85,17 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
       return json(empty);
     }
 
-    const [runScores, shares, taskScores, sampleScores, citations] = await Promise.all([
+    const run = await runForReading(originalRun, project.activeScoringVersion);
+    const [runScores, shares, tasks, sampleScores, citations] = await Promise.all([
       prisma.runScore.findMany({
         where: { runId: run.id, scoringVersion: run.scoringVersion },
       }),
       prisma.voiceShare.findMany({
         where: { runId: run.id, taskId: null, scoringVersion: run.scoringVersion },
       }),
-      prisma.taskScore.findMany({
-        where: { runId: run.id, scoringVersion: run.scoringVersion },
-        include: {
-          task: {
-            select: { mode: true, provider: { select: { code: true, label: true } } },
-          },
-        },
+      prisma.runTask.findMany({
+        where: { runId: run.id },
+        select: { id: true, queryId: true, providerId: true, mode: true, provider: { select: { code: true, label: true } } },
       }),
       prisma.sampleScore.findMany({
         // Only COMPLETED samples, matching the aggregation layer: a cancelled
@@ -135,7 +122,7 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
                 select: {
                   mode: true,
                   provider: { select: { code: true } },
-                  query: { select: { text: true } },
+                  queryTextSnapshot: true,
                 },
               },
             },
@@ -149,7 +136,18 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
 
     // The two axes are reported side by side and never averaged: their
     // difference is the only actionable diagnostic they carry together.
-    const retrievalGap = grounded && parametric ? grounded.median - parametric.median : null;
+    const taskById = new Map(tasks.map((task) => [task.id, task]));
+    const snapshot = readRunSnapshot(run.configSnapshot);
+    const retrieval = pairedRetrievalDelta(sampleScores.flatMap((score) => {
+      const task = taskById.get(score.taskId);
+      return task ? [{ queryId: task.queryId, providerId: task.providerId, mode: task.mode, value: score.score }] : [];
+    }), {
+      seed: seedFor([run.id, run.scoringVersion, "paired-retrieval"]),
+      providerModes: Array.isArray(snapshot.providers)
+        ? Object.fromEntries(snapshot.providers.map((provider) => [provider.id, provider.modes]))
+        : undefined,
+    });
+    const retrievalGap = retrieval.mean;
 
     const shareByEntity = new Map<string, ShareAccumulator>();
     for (const share of shares) {
@@ -205,7 +203,7 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
       entry.samples.add(citation.sampleId);
       entry.modes.add(citation.sample.task.mode);
       entry.providers.add(citation.sample.task.provider.code);
-      entry.queries.add(citation.sample.task.query.text);
+      entry.queries.add(citation.sample.task.queryTextSnapshot);
       byDomain.set(citation.domain, entry);
     }
 
@@ -223,18 +221,10 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
       .sort((a, b) => b.citationCount - a.citationCount || a.domain.localeCompare(b.domain))
       .slice(0, TOP_SOURCES);
 
-    // Each (provider, mode) cell aggregates the individual sample scores, not
-    // the per-task medians. Bootstrapping a median of medians would report `n`
-    // as a count of queries while the axis cards report a count of samples, so
-    // the same figure on the same page would mean two different things.
-    const cellOfTask = new Map<string, { providerCode: string; providerLabel: string; mode: SamplingMode }>();
-    for (const score of taskScores) {
-      cellOfTask.set(score.taskId, {
-        providerCode: score.task.provider.code,
-        providerLabel: score.task.provider.label,
-        mode: score.task.mode,
-      });
-    }
+    const cellOfTask = new Map(tasks.map((task) => [task.id, {
+      providerCode: task.provider.code, providerLabel: task.provider.label,
+      providerId: task.providerId, queryId: task.queryId, mode: task.mode,
+    }]));
 
     const byCell = new Map<string, CellAccumulator>();
     for (const score of sampleScores) {
@@ -248,7 +238,7 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
         scores: [],
         present: 0,
       };
-      entry.scores.push(score.score);
+      entry.scores.push({ queryId: cell.queryId, providerId: cell.providerId, value: score.score });
       if (score.brandPresent) entry.present += 1;
       byCell.set(key, entry);
     }
@@ -258,7 +248,7 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
       .map((cell) => {
         // Seeded from the cell's identity, so the interval is the same on every
         // read of the same run rather than a new draw per request.
-        const agg = aggregate(cell.scores, {
+        const agg = clusterBootstrap(cell.scores, {
           seed: seedFor([run.id, cell.providerCode, cell.mode]),
           lowNThreshold: LOW_N_RUN,
           // Matches the aggregation layer: the estimator belongs to the run's
@@ -273,7 +263,7 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
           ciLow: agg.ciLow,
           ciHigh: agg.ciHigh,
           stability: agg.stability,
-          n: agg.n,
+          n: agg.n, rawN: agg.rawN, cellN: agg.cellN, ciMethod: agg.method, nUnit: "queries" as const,
           lowN: agg.lowN,
           brandPresenceRate: ratio(cell.present, cell.scores.length),
         };
@@ -292,12 +282,14 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
           totalSamples: run.totalSamples,
           doneSamples: run.doneSamples,
           failedSamples: run.failedSamples,
+          ...await analysisCoverage(run),
         },
         completedAt: run.completedAt?.toISOString() ?? null,
       },
       grounded,
       parametric,
       retrievalGap,
+      retrieval,
       totalQueries,
       shareOfVoice,
       topSources,

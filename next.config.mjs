@@ -21,6 +21,11 @@ const securityHeaders = [
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: "standalone",
+  outputFileTracingIncludes: {
+    "/api/health/ready": ["./prisma/migrations/**/migration.sql"],
+    "/*": ["./node_modules/.prisma/client/**/*"],
+  },
   reactStrictMode: true,
   poweredByHeader: false,
   // `next dev` otherwise writes AGENTS.md and CLAUDE.md at the repository root

@@ -72,6 +72,7 @@ model Brand {
   name      String
   domain    String?
   aliases   String[] @default([])
+  archivedAt DateTime? @map("archived_at")
   createdAt DateTime @default(now()) @map("created_at")
 
   project  Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
@@ -87,6 +88,7 @@ model Competitor {
   name      String
   domain    String?
   aliases   String[] @default([])
+  archivedAt DateTime? @map("archived_at")
   createdAt DateTime @default(now()) @map("created_at")
 
   project  Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
@@ -101,6 +103,7 @@ model Query {
   projectId String   @map("project_id")
   text      String
   isActive  Boolean  @default(true) @map("is_active")
+  archivedAt DateTime? @map("archived_at")
   createdAt DateTime @default(now()) @map("created_at")
 
   project  Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
@@ -212,6 +215,7 @@ model Run {
   extractionVersion String         @map("extraction_version")
   repetitions       Int
   modes             SamplingMode[]
+  configSnapshot    Json @default("{}") @map("config_snapshot")
 
   totalTasks    Int @default(0) @map("total_tasks")
   pendingTasks  Int @default(0) @map("pending_tasks")
@@ -242,6 +246,8 @@ model RunTask {
   providerId String       @map("provider_id")
   mode       SamplingMode
   status     TaskStatus   @default(PENDING)
+  queryTextSnapshot String @default("") @map("query_text_snapshot")
+  localeSnapshot Json @default("{}") @map("locale_snapshot")
 
   plannedSamples Int @map("planned_samples")
   pendingSamples Int @map("pending_samples")
@@ -253,7 +259,7 @@ model RunTask {
   completedAt  DateTime? @map("completed_at")
 
   run      Run      @relation(fields: [runId], references: [id], onDelete: Cascade)
-  query    Query    @relation(fields: [queryId], references: [id], onDelete: Cascade)
+  query    Query    @relation(fields: [queryId], references: [id], onDelete: NoAction)
   provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
 
   samples RunSample[]
@@ -313,6 +319,7 @@ model AIResponse {
   sampleId     String   @unique @map("sample_id")
   rawText      String   @map("raw_text")
   rawJson      Json     @map("raw_json")
+  providerSources Json? @map("provider_sources")
   finishReason String?  @map("finish_reason")
   truncated    Boolean  @default(false)
   createdAt    DateTime @default(now()) @map("created_at")
@@ -403,7 +410,7 @@ model BrandMention {
   sentimentJudgeVersion String?    @map("sentiment_judge_version")
 
   sample RunSample @relation(fields: [sampleId], references: [id], onDelete: Cascade)
-  brand  Brand     @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  brand  Brand     @relation(fields: [brandId], references: [id], onDelete: NoAction)
 
   @@unique([sampleId, brandId, extractionVersion, occurrenceIndex])
   @@index([runId, brandId])
@@ -436,7 +443,7 @@ model CompetitorMention {
   sentimentJudgeVersion String?    @map("sentiment_judge_version")
 
   sample     RunSample  @relation(fields: [sampleId], references: [id], onDelete: Cascade)
-  competitor Competitor @relation(fields: [competitorId], references: [id], onDelete: Cascade)
+  competitor Competitor @relation(fields: [competitorId], references: [id], onDelete: NoAction)
 
   @@unique([sampleId, competitorId, extractionVersion, occurrenceIndex])
   @@index([runId, competitorId])
@@ -488,12 +495,13 @@ model TaskScore {
 
   scoringVersion String @map("scoring_version")
   n              Int
+  rawN           Int @default(0) @map("raw_n")
   nFailed        Int    @default(0) @map("n_failed")
 
   median   Float
   mean     Float
-  ciLow    Float  @map("ci_low")
-  ciHigh   Float  @map("ci_high")
+  ciLow    Float?  @map("ci_low")
+  ciHigh   Float?  @map("ci_high")
   ciMethod String @default("percentile_bootstrap_b2000") @map("ci_method")
 
   mad       Float
@@ -523,11 +531,14 @@ model RunScore {
 
   scoringVersion String @map("scoring_version")
   n              Int
+  rawN           Int @default(0) @map("raw_n")
+  cellN          Int @default(0) @map("cell_n")
+  ciMethod       String @default("legacy-pooled-bootstrap") @map("ci_method")
 
   median Float
   mean   Float
-  ciLow  Float @map("ci_low")
-  ciHigh Float @map("ci_high")
+  ciLow  Float? @map("ci_low")
+  ciHigh Float? @map("ci_high")
 
   mad       Float
   iqr       Float
@@ -624,6 +635,8 @@ model Job {
   availableAt DateTime @default(now()) @map("available_at")
   attempts    Int      @default(0)
   maxAttempts Int      @default(4) @map("max_attempts")
+  leaseVersion Int @default(0) @map("lease_version")
+  dedupeKey String? @unique @map("dedupe_key")
 
   lockedBy       String?   @map("locked_by")
   leaseExpiresAt DateTime? @map("lease_expires_at")

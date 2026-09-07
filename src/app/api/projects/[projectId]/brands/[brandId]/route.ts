@@ -36,7 +36,7 @@ const updateSchema = z.object({
  * 404 rather than a cross-project write. */
 async function assertBrandBelongs(projectId: string, brandId: string): Promise<void> {
   const brand = await prisma.brand.findFirst({
-    where: { id: brandId, projectId },
+    where: { id: brandId, projectId, archivedAt: null },
     select: { projectId: true },
   });
   assertBelongs(brand, projectId, "Marque");
@@ -55,7 +55,7 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
 
     if (Object.keys(data).length === 0) throw badRequest("Aucun champ à mettre à jour");
 
-    const brand = await prisma.brand.update({ where: { id: brandId }, data });
+    const brand = await prisma.brand.update({ where: { id: brandId, projectId: project.id, archivedAt: null }, data });
     return json(brand);
   });
 }
@@ -64,7 +64,7 @@ export async function DELETE(request: NextRequest, { params }: RouteContext) {
   const { projectId, brandId } = await params;
   return withProject(request, projectId, async ({ project }) => {
     await assertBrandBelongs(project.id, brandId);
-    await prisma.brand.deleteMany({ where: { id: brandId, projectId: project.id } });
+    await prisma.brand.updateMany({ where: { id: brandId, projectId: project.id, archivedAt: null }, data: { archivedAt: new Date() } });
     return json({ success: true });
   });
 }

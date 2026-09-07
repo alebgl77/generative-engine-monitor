@@ -5,6 +5,7 @@ import { z } from "zod";
 import { json, parseBody, withProject } from "@/lib/api/route-helpers";
 import { badRequest, notFound } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import { lockRunOwner, preserveDailyReservation } from "@/lib/runs/limits";
 import type { ProjectSummary } from "@/types/api";
 
 type RouteContext = { params: Promise<{ projectId: string }> };
@@ -52,7 +53,7 @@ const updateSchema = z.object({
 });
 
 const projectShape = {
-  _count: { select: { brands: true, competitors: true, queries: true } },
+  _count: { select: { brands: { where: { archivedAt: null } }, competitors: { where: { archivedAt: null } }, queries: { where: { archivedAt: null } } } },
   runs: { orderBy: { createdAt: "desc" }, take: 1, select: { createdAt: true } },
 } as const;
 
@@ -129,8 +130,12 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
 
 export async function DELETE(request: NextRequest, { params }: RouteContext) {
   const { projectId } = await params;
-  return withProject(request, projectId, async ({ project }) => {
-    await prisma.project.delete({ where: { id: project.id } });
+  return withProject(request, projectId, async ({ project, userId }) => {
+    await prisma.$transaction(async (tx) => {
+      await lockRunOwner(tx, userId);
+      await preserveDailyReservation(tx, userId);
+      await tx.project.delete({ where: { id: project.id } });
+    });
     return json({ success: true });
   });
 }

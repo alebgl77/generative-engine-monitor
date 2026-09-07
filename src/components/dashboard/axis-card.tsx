@@ -2,8 +2,7 @@
 
 import * as React from "react";
 import type { SamplingMode } from "@prisma/client";
-import type { LucideIcon } from "lucide-react";
-import { AlertTriangle } from "lucide-react";
+import { Warning, type Icon } from "@phosphor-icons/react";
 import type { AxisSummary } from "@/types/api";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { InfoTooltip } from "@/components/ui/tooltip";
@@ -28,9 +27,9 @@ export const MODE_LABEL: Record<SamplingMode, string> = {
 
 export const MODE_HINT: Record<SamplingMode, string> = {
   GROUNDED:
-    "Recherche web native du moteur activée : ce qu'il va chercher en direct au moment de la réponse.",
+    "Réponses de l'API avec recherche web native activée ; ce n'est pas une mesure de l'interface publique personnalisée.",
   PARAMETRIC:
-    "Sans recherche web : ce que le modèle a retenu de son entraînement.",
+    "Réponses de l'API sans recherche web native, dans les paramètres de ce run et sur ce panel de requêtes.",
 };
 
 export type AxisCardTone = "default" | "accent";
@@ -39,7 +38,7 @@ interface AxisCardProps {
   title: string;
   explanation: string;
   summary: AxisSummary | null;
-  icon?: LucideIcon;
+  icon?: Icon;
   tone?: AxisCardTone;
   hint?: string;
   emptyMessage?: string;
@@ -66,7 +65,7 @@ export function AxisCard({
       <CardHeader className="pb-3">
         <div className="flex items-center gap-2">
           {Icon ? (
-            <Icon className="h-4 w-4 text-muted-foreground" aria-hidden />
+            <Icon size={16} weight="regular" className="text-muted-foreground" aria-hidden />
           ) : null}
           <h3 className="text-sm font-medium">{title}</h3>
           {hint ? <InfoTooltip label={hint} /> : null}
@@ -89,7 +88,7 @@ export function AxisCard({
 function AxisBody({ summary }: { summary: AxisSummary }) {
   const tone = stabilityTone(summary);
   const stabilityPct = Math.round(
-    Math.min(1, Math.max(0, summary.stability)) * 100
+    Math.min(1, Math.max(0, summary.stability ?? 0)) * 100
   );
 
   return (
@@ -97,7 +96,7 @@ function AxisBody({ summary }: { summary: AxisSummary }) {
       <div className="flex items-baseline gap-2">
         <span
           className={cn(
-            "text-4xl font-semibold tabular-nums leading-none",
+            "font-mono text-4xl font-semibold tabular-nums leading-none tracking-[-0.05em]",
             TONE_TEXT[tone]
           )}
         >
@@ -125,18 +124,22 @@ function AxisBody({ summary }: { summary: AxisSummary }) {
         </div>
         <div
           role="img"
-          aria-label={`Stabilité ${stabilityPct} %, ${TONE_LABEL[tone]}`}
-          className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
+          aria-label={summary.stability === null ? "Stabilité indisponible" : `Stabilité ${stabilityPct} %, ${TONE_LABEL[tone]}`}
+          className="h-1.5 w-full overflow-hidden rounded-sm bg-muted"
         >
           <div
-            className={cn("h-full rounded-full", TONE_FILL[tone])}
+            className={cn("h-full rounded-sm", TONE_FILL[tone])}
             style={{ width: `${stabilityPct}%` }}
           />
         </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-        <span className="tabular-nums">n = {summary.n} échantillons</span>
+        <span className="tabular-nums">n = {summary.n} {summary.nUnit === "queries" ? "requêtes" : "échantillons historiques"}</span>
+        <span>
+          {summary.ciMethod ?? "méthode historique"} · {summary.rawN == null ? "réponses brutes indisponibles" : `${summary.rawN} réponses brutes`}
+          {summary.cellN == null ? "" : ` · ${summary.cellN} cellules`}
+        </span>
         <span className="tabular-nums">
           Marque présente : {Math.round(summary.brandPresenceRate * 100)} % des
           réponses
@@ -144,9 +147,9 @@ function AxisBody({ summary }: { summary: AxisSummary }) {
       </div>
 
       {summary.lowN && (
-        <p className="flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[11px] leading-snug text-amber-700">
-          <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
-          {LOW_N_CAVEAT} : l&apos;intervalle indique un sens, pas une valeur.
+        <p className="flex items-start gap-1.5 rounded-sm border border-primary/40 bg-primary/5 px-2.5 py-1.5 text-[11px] leading-snug text-primary">
+          <Warning size={14} weight="regular" className="mt-px shrink-0" aria-hidden />
+          {LOW_N_CAVEAT} : aucune conclusion de significativité.
         </p>
       )}
     </div>

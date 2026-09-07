@@ -2,6 +2,7 @@ import { getServerAuth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { notFound } from "next/navigation";
 import { ProjectNav } from "@/components/dashboard/project-nav";
+import { ProjectIdentityProvider } from "@/components/dashboard/project-identity";
 
 export default async function ProjectLayout({
   children,
@@ -22,9 +23,11 @@ export default async function ProjectLayout({
   if (!project) return notFound();
 
   return (
-    <div>
+    <ProjectIdentityProvider projectName={project.name}>
       <ProjectNav projectId={project.id} projectName={project.name} />
-      <div className="p-8 max-w-7xl mx-auto">{children}</div>
-    </div>
+      <div className="mx-auto max-w-[94rem] px-4 pb-20 pt-8 sm:px-6 sm:pt-10 lg:px-8">
+        {children}
+      </div>
+    </ProjectIdentityProvider>
   );
 }

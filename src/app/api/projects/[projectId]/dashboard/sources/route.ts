@@ -3,6 +3,7 @@ import type { SamplingMode } from "@prisma/client";
 
 import { json, withProject } from "@/lib/api/route-helpers";
 import { prisma } from "@/lib/prisma";
+import { runForReading } from "@/lib/scoring/read-model";
 import type { SourceRow, SourcesResponse } from "@/types/api";
 
 type RouteContext = { params: Promise<{ projectId: string }> };
@@ -22,15 +23,17 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
   return withProject(request, projectId, async ({ project }) => {
     // A partial or cancelled run stopped early; the citations it collected before
     // stopping are measurements all the same.
-    const run = await prisma.run.findFirst({
+    const originalRun = await prisma.run.findFirst({
       where: { projectId: project.id, status: { in: ["COMPLETED", "PARTIAL", "CANCELLED"] } },
       orderBy: { createdAt: "desc" },
     });
 
-    if (!run) {
+    if (!originalRun) {
       const empty: SourcesResponse = { runId: null, rows: [] };
       return json(empty);
     }
+
+    const run = await runForReading(originalRun, project.activeScoringVersion);
 
     const citations = await prisma.citation.findMany({
       where: { runId: run.id, extractionVersion: run.extractionVersion },
@@ -44,7 +47,7 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
               select: {
                 mode: true,
                 provider: { select: { code: true } },
-                query: { select: { text: true } },
+                queryTextSnapshot: true,
               },
             },
           },
@@ -68,7 +71,7 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
       entry.samples.add(citation.sampleId);
       entry.modes.add(citation.sample.task.mode);
       entry.providers.add(citation.sample.task.provider.code);
-      entry.queries.add(citation.sample.task.query.text);
+      entry.queries.add(citation.sample.task.queryTextSnapshot);
       byDomain.set(citation.domain, entry);
     }
 
@@ -85,7 +88,7 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
       }))
       .sort((a, b) => b.citationCount - a.citationCount || a.domain.localeCompare(b.domain));
 
-    const payload: SourcesResponse = { runId: run.id, rows };
+    const payload: SourcesResponse = { runId: run.id, scoringVersion: run.scoringVersion, extractionVersion: run.extractionVersion, rows };
     return json(payload);
   });
 }

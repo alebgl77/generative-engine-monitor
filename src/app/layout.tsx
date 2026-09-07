@@ -1,15 +1,14 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { GeistSans } from "geist/font/sans";
+import { GeistMono } from "geist/font/mono";
 import "./globals.css";
 import { AuthProvider } from "@/components/providers/session-provider";
 import { ToastProvider } from "@/components/ui/toast";
 
-const inter = Inter({ subsets: ["latin"] });
-
 export const metadata: Metadata = {
-  title: "AiO — AI Visibility Intelligence",
+  title: "Generative Engine Monitor — Chambre des signaux",
   description:
-    "Analysez votre visibilité dans les moteurs IA, identifiez qui vous remplace, comprenez quelles sources comptent.",
+    "Mesurez et documentez la visibilité de votre marque dans les réponses des moteurs IA.",
 };
 
 export default function RootLayout({
@@ -19,7 +18,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="fr">
-      <body className={inter.className}>
+      <body className={`${GeistSans.variable} ${GeistMono.variable}`}>
         <AuthProvider>
           <ToastProvider>{children}</ToastProvider>
         </AuthProvider>
