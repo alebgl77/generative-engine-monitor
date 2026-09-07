@@ -1,6 +1,6 @@
 import { logger } from "@/lib/logger";
 import { release } from "@/lib/queue/client";
-import { LEASE } from "@/lib/queue/types";
+import { LEASE, type JobLease } from "@/lib/queue/types";
 
 /**
  * Graceful stop.
@@ -14,6 +14,7 @@ import { LEASE } from "@/lib/queue/types";
 
 export interface InFlightJob {
   id: string;
+  lease: JobLease;
   controller: AbortController;
   /** Settles when the handler has finished, successfully or not. */
   done: Promise<unknown>;
@@ -41,7 +42,8 @@ function allSettled(jobs: InFlightJob[]): Promise<unknown> {
 
 export function installShutdownHandlers(
   controller: AbortController,
-  inFlight: () => InFlightJob[]
+  inFlight: () => InFlightJob[],
+  onStopping: () => Promise<void> = async () => undefined
 ): ShutdownHandle {
   let stopping = false;
 
@@ -60,7 +62,7 @@ export function installShutdownHandlers(
     const stranded = inFlight();
     for (const job of stranded) {
       try {
-        await release(job.id);
+        await release(job.lease);
       } catch (err) {
         logger.error("could not hand back a lease on shutdown", { jobId: job.id, error: err });
       }
@@ -84,7 +86,7 @@ export function installShutdownHandlers(
     });
     controller.abort();
 
-    void drain()
+    void onStopping().catch((error) => logger.error("could not clear worker health", { error })).then(drain)
       .catch((err) => logger.error("shutdown drain failed", { error: err }))
       .then(() => {
         logger.info("worker stopped");

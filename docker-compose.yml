@@ -1,5 +1,5 @@
 ##
-## Development stack: PostgreSQL + web + worker.
+## Development stack: PostgreSQL + one-shot migrator + web + worker.
 ##   cp .env.example .env && docker compose up
 ##
 ## The worker is a separate service on purpose. Runs are executed by a durable
@@ -11,6 +11,7 @@ x-app-env: &app-env
   DATABASE_URL: postgresql://${POSTGRES_USER:-gem}:${POSTGRES_PASSWORD:-gem_dev_only_change_me}@postgres:5432/${POSTGRES_DB:-gem}
   NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
   NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?set NEXTAUTH_SECRET in .env — run npm run keygen}
+  REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
   CREDENTIAL_KEYS: ${CREDENTIAL_KEYS:?set CREDENTIAL_KEYS in .env — run npm run keygen}
   CREDENTIAL_KEY_CURRENT: ${CREDENTIAL_KEY_CURRENT:-1}
   CREDENTIAL_FINGERPRINT_PEPPER: ${CREDENTIAL_FINGERPRINT_PEPPER:?set CREDENTIAL_FINGERPRINT_PEPPER in .env}
@@ -22,15 +23,18 @@ x-app-env: &app-env
   SENTIMENT_JUDGE_PROVIDER: ${SENTIMENT_JUDGE_PROVIDER:-openai}
   SENTIMENT_JUDGE_MODEL: ${SENTIMENT_JUDGE_MODEL:-gpt-5.6-luna}
   LOG_LEVEL: ${LOG_LEVEL:-info}
+  TZ: UTC
 
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    command: ["postgres", "-c", "timezone=UTC", "-c", "log_timezone=UTC"]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-gem}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gem_dev_only_change_me}
       POSTGRES_DB: ${POSTGRES_DB:-gem}
+      TZ: UTC
     # Bound to the loopback interface: an unauthenticated dev database should
     # not be reachable from the local network.
     ports:
@@ -43,6 +47,23 @@ services:
       timeout: 3s
       retries: 10
 
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    restart: "no"
+    command: ["migrate"]
+    environment:
+      <<: *app-env
+      NODE_ENV: development
+      SEED_DEMO: ${SEED_DEMO:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - /app/node_modules
+
   web:
     build:
       context: .
@@ -54,12 +75,11 @@ services:
     environment:
       <<: *app-env
       NODE_ENV: development
-      # This service owns migrations and seeding; the worker waits for both.
-      RUN_MIGRATIONS: "true"
-      SEED_DEMO: ${SEED_DEMO:-true}
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     volumes:
       - .:/app
       - /app/node_modules
@@ -74,13 +94,12 @@ services:
     environment:
       <<: *app-env
       NODE_ENV: development
-      RUN_MIGRATIONS: "false"
       WORKER_ID: worker-dev-1
     depends_on:
       postgres:
         condition: service_healthy
-      web:
-        condition: service_started
+      migrate:
+        condition: service_completed_successfully
     volumes:
       - .:/app
       - /app/node_modules

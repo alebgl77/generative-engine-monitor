@@ -9,4 +9,13 @@ coverage
 *.md
 !README.md
 .claude
+.codex
+.Codex
+.tierdecay
+.agents
 docs
+tests
+**/*.test.ts
+**/*.test.tsx
+*.tsbuildinfo
+graphify-out

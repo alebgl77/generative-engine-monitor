@@ -4,34 +4,304 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 224 71% 4%;
-    --card: 0 0% 100%;
-    --card-foreground: 224 71% 4%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 224 71% 4%;
-    --primary: 220 70% 50%;
-    --primary-foreground: 210 20% 98%;
-    --secondary: 220 14% 96%;
-    --secondary-foreground: 220 9% 46%;
-    --muted: 220 14% 96%;
-    --muted-foreground: 220 9% 46%;
-    --accent: 220 14% 96%;
-    --accent-foreground: 224 71% 4%;
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 210 20% 98%;
-    --border: 220 13% 91%;
-    --input: 220 13% 91%;
-    --ring: 220 70% 50%;
+    --background: 44 31% 93%;
+    --foreground: 60 7% 8%;
+    --card: 42 27% 96%;
+    --card-foreground: 60 7% 8%;
+    --popover: 42 27% 96%;
+    --popover-foreground: 60 7% 8%;
+    --primary: 14 64% 43%;
+    --primary-foreground: 44 31% 95%;
+    --secondary: 40 22% 88%;
+    --secondary-foreground: 60 7% 12%;
+    --muted: 40 18% 88%;
+    --muted-foreground: 40 7% 38%;
+    --accent: 40 22% 88%;
+    --accent-foreground: 60 7% 12%;
+    --destructive: 8 61% 43%;
+    --destructive-foreground: 44 31% 95%;
+    --border: 38 15% 76%;
+    --input: 38 15% 70%;
+    --ring: 14 64% 48%;
     --radius: 0.5rem;
   }
-}
 
-@layer base {
   * {
     @apply border-border;
   }
+
+  html {
+    min-width: 20rem;
+    scroll-behavior: smooth;
+  }
+
   body {
     @apply bg-background text-foreground;
+    min-height: 100dvh;
+    overflow-x: hidden;
+    font-family: var(--font-geist-sans), sans-serif;
+    font-feature-settings: "kern" 1, "ss01" 1, "ss02" 1;
+    text-rendering: optimizeLegibility;
+  }
+
+  body::before {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    content: "";
+    background-image:
+      linear-gradient(hsl(var(--foreground) / 0.025) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--foreground) / 0.025) 1px, transparent 1px);
+    background-size: 2rem 2rem;
+    mask-image: linear-gradient(to bottom, black, transparent 72%);
+  }
+
+  ::selection {
+    background: hsl(var(--primary) / 0.2);
+    color: hsl(var(--foreground));
+  }
+
+  :where(button, a, summary, input, textarea, select):focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 3px;
+  }
+
+  code,
+  pre,
+  kbd,
+  samp,
+  .font-mono {
+    font-family: var(--font-geist-mono), monospace;
+  }
+}
+
+@layer components {
+  .skip-link {
+    position: fixed;
+    top: 0.75rem;
+    left: 0.75rem;
+    z-index: 50;
+    transform: translateY(-200%);
+    border: 1px solid hsl(var(--foreground));
+    border-radius: 0.125rem;
+    background: hsl(var(--foreground));
+    padding: 0.55rem 0.8rem;
+    color: hsl(var(--background));
+    font-size: 0.8125rem;
+    font-weight: 600;
+    transition: transform 160ms ease;
+  }
+
+  .skip-link:focus {
+    transform: translateY(0);
+  }
+
+  .ledger-section {
+    border-top: 1px solid hsl(var(--foreground) / 0.7);
+    padding-top: 1.5rem;
+  }
+
+  .ledger-section-heading {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 1.5rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .ledger-section-heading h2 {
+    margin-top: 0.25rem;
+    font-size: clamp(1.45rem, 2vw, 2rem);
+    font-weight: 650;
+    letter-spacing: -0.04em;
+    line-height: 1;
+    text-wrap: balance;
+  }
+
+  .ledger-kicker {
+    font-family: var(--font-geist-mono), monospace;
+    font-size: 0.625rem;
+    line-height: 1rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .ledger-section-note {
+    max-width: 32rem;
+    font-size: 0.75rem;
+    line-height: 1.5;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .ledger-tag {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid hsl(var(--primary) / 0.45);
+    border-radius: 0.125rem;
+    padding: 0.15rem 0.35rem;
+    color: hsl(var(--primary));
+    font-family: var(--font-geist-mono), monospace;
+    font-size: 0.5625rem;
+    letter-spacing: 0.08em;
+    line-height: 1;
+    text-transform: uppercase;
+  }
+
+  .measurement-passport {
+    position: sticky;
+    top: 5.25rem;
+    min-width: 0;
+    border: 1px solid hsl(var(--foreground));
+    border-radius: 0.625rem;
+    background: hsl(var(--foreground));
+    padding: clamp(1rem, 2.3vw, 1.5rem);
+    color: hsl(var(--background));
+  }
+
+  .passport-label {
+    font-family: var(--font-geist-mono), monospace;
+    font-size: 0.5625rem;
+    letter-spacing: 0.13em;
+    line-height: 1rem;
+    text-transform: uppercase;
+    color: hsl(var(--background) / 0.58);
+  }
+
+  .passport-preview {
+    margin-top: 1rem;
+    border-top: 1px solid hsl(var(--background) / 0.2);
+    padding-top: 0.75rem;
+  }
+
+  .passport-preview summary {
+    display: flex;
+    cursor: pointer;
+    list-style: none;
+    align-items: center;
+    justify-content: space-between;
+    border-radius: 0.125rem;
+    font-size: 0.75rem;
+    color: hsl(var(--background) / 0.72);
+  }
+
+  .passport-preview summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .passport-preview[open] summary svg {
+    transform: rotate(180deg);
+  }
+
+  .passport-preview pre {
+    margin-top: 0.75rem;
+    max-height: 12rem;
+    max-width: 100%;
+    overflow: auto;
+    border: 1px solid hsl(var(--background) / 0.16);
+    border-radius: 0.25rem;
+    background: hsl(var(--background) / 0.055);
+    padding: 0.75rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: hsl(var(--background) / 0.72);
+    font-size: 0.625rem;
+    line-height: 1.55;
+  }
+
+  .passport-action {
+    display: inline-flex;
+    min-height: 2.5rem;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+    border: 1px solid hsl(var(--primary));
+    border-radius: 0.25rem;
+    background: hsl(var(--primary));
+    padding: 0.55rem 0.75rem;
+    color: hsl(var(--primary-foreground));
+    font-size: 0.75rem;
+    font-weight: 600;
+    transition: transform 160ms ease, background-color 160ms ease;
+  }
+
+  .passport-action:hover {
+    background: hsl(var(--primary) / 0.84);
+    transform: translateY(-1px);
+  }
+
+  .passport-action:active {
+    transform: translateY(1px);
+  }
+
+  .passport-action-secondary {
+    border-color: hsl(var(--background) / 0.35);
+    background: transparent;
+    color: hsl(var(--background));
+  }
+
+  .passport-action-secondary:hover {
+    background: hsl(var(--background) / 0.1);
+  }
+
+  .ledger-enter > * {
+    animation: ledger-enter 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .ledger-enter > :nth-child(2) {
+    animation-delay: 70ms;
+  }
+
+  .ledger-enter > :nth-child(3) {
+    animation-delay: 140ms;
+  }
+
+  .ledger-enter > :nth-child(4) {
+    animation-delay: 210ms;
+  }
+
+  .ledger-enter > :nth-child(n + 5) {
+    animation-delay: 280ms;
+  }
+}
+
+@keyframes ledger-enter {
+  from {
+    opacity: 0;
+    transform: translateY(0.75rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 47.999rem) {
+  .ledger-section-heading {
+    display: block;
+  }
+
+  .ledger-section-note {
+    margin-top: 0.75rem;
+  }
+
+  .measurement-passport {
+    position: static;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

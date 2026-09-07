@@ -38,9 +38,11 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-background px-4">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <h1 className="text-2xl font-semibold tracking-tight">AiO</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            Generative Engine Monitor
+          </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            AI Visibility Intelligence
+            Observatoire de visibilité générative
           </p>
         </div>
 

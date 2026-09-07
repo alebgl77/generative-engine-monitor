@@ -1,14 +1,14 @@
 import type { NextRequest } from "next/server";
-import type { Prisma, Run, TaskScore } from "@prisma/client";
+import type { Prisma, Run } from "@prisma/client";
 
 import { json, withProject } from "@/lib/api/route-helpers";
 import { AUDIT_ACTIONS, recordAudit } from "@/lib/audit";
 import { tooManyRequests } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import { runForReading, analysisCoverage, toAxisSummary } from "@/lib/scoring/read-model";
 import { ensureBucket, tryConsume } from "@/lib/queue/ratelimit";
 import { planRun } from "@/lib/runs/plan";
 import type {
-  AxisSummary,
   RunCreatedResponse,
   RunSummary,
   RunTaskCounts,
@@ -56,25 +56,13 @@ function emptyTaskCounts(): RunTaskCounts {
   };
 }
 
-function toAxisSummary(score: TaskScore | undefined): AxisSummary | null {
-  if (!score) return null;
-  return {
-    median: score.median,
-    ciLow: score.ciLow,
-    ciHigh: score.ciHigh,
-    stability: score.stability,
-    n: score.n,
-    lowN: score.lowN,
-    brandPresenceRate: score.brandPresenceRate,
-  };
-}
 
 function toTaskSummary(task: TaskRow, scoringVersion: string): RunTaskSummary {
   return {
     id: task.id,
     mode: task.mode,
     status: task.status,
-    query: { id: task.query.id, text: task.query.text },
+    query: { id: task.query.id, text: task.queryTextSnapshot },
     provider: { code: task.provider.code, label: task.provider.label },
     samples: {
       total: task.plannedSamples,
@@ -112,11 +100,14 @@ function toRunSummary(run: Run, tasks: TaskRow[], taskCounts: RunTaskCounts): Ru
 export async function GET(request: NextRequest, { params }: RouteContext) {
   const { projectId } = await params;
   return withProject(request, projectId, async ({ project }) => {
-    const runs = await prisma.run.findMany({
+    const originalRuns = await prisma.run.findMany({
       where: { projectId: project.id },
       orderBy: { createdAt: "desc" },
       take: RUNS_LISTED,
     });
+
+    const runs = await Promise.all(originalRuns.map((run) => runForReading(run, project.activeScoringVersion)));
+    const coverage = await Promise.all(runs.map(analysisCoverage));
 
     if (runs.length === 0) {
       const empty: RunsResponse = { runs: [] };
@@ -151,7 +142,8 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
 
     const payload: RunsResponse = {
       runs: runs.map((run, index) =>
-        toRunSummary(run, tasksPerRun[index], countsByRun.get(run.id) ?? emptyTaskCounts())
+        ({ ...toRunSummary(run, tasksPerRun[index], countsByRun.get(run.id) ?? emptyTaskCounts()),
+          progress: { ...toRunSummary(run, [], emptyTaskCounts()).progress, ...coverage[index] } })
       ),
     };
     return json(payload);

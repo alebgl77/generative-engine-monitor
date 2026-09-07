@@ -20,7 +20,7 @@ RUN chmod +x docker-entrypoint.sh
 
 EXPOSE 3000
 
-# The development stack boots through the same entrypoint as production, so the
-# migrate-and-seed step cannot be skipped by overriding the command.
+# Only the dedicated Compose migrator passes "migrate" to this entrypoint.
+# Web and worker start after that one-shot service completes successfully.
 ENTRYPOINT ["./docker-entrypoint.sh"]
 CMD ["npm", "run", "dev"]

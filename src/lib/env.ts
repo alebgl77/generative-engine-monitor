@@ -63,6 +63,10 @@ const schema = z
 
     NEXTAUTH_URL: z.string().url().optional(),
     NEXTAUTH_SECRET: z.string().min(16),
+    REGISTRATION_ENABLED: z
+      .enum(["true", "false"])
+      .default("true")
+      .transform((v) => v === "true"),
 
     // Credential encryption. Rotation: add a new version, bump CURRENT, then
     // re-encrypt existing rows in the background — old rows stay readable.

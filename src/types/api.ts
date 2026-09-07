@@ -5,6 +5,7 @@ import type {
   TaskStatus,
 } from "@prisma/client";
 import type { ScoreContribution } from "@/lib/scoring/types";
+import type { PairedRetrievalEstimate } from "@/lib/scoring/cluster-stats";
 
 /**
  * The API contract, imported by both the route handlers and the pages.
@@ -20,11 +21,15 @@ import type { ScoreContribution } from "@/lib/scoring/types";
  * directional band rather than a figure.
  */
 export interface AxisSummary {
-  median: number;
-  ciLow: number;
-  ciHigh: number;
-  stability: number;
+  median: number | null;
+  ciLow: number | null;
+  ciHigh: number | null;
+  stability: number | null;
   n: number;
+  rawN?: number | null;
+  cellN?: number | null;
+  ciMethod?: string;
+  nUnit?: "queries" | "samples";
   lowN: boolean;
   brandPresenceRate: number;
 }
@@ -34,6 +39,10 @@ export interface RunProgress {
   totalSamples: number;
   doneSamples: number;
   failedSamples: number;
+  nPlanned?: number;
+  nSuccessful?: number;
+  nScored?: number;
+  missingAnalysis?: number;
 }
 
 export interface EntityShare {
@@ -71,11 +80,11 @@ export interface OverviewResponse {
   /** What the models retained from training. */
   parametric: AxisSummary | null;
   /**
-   * grounded.median - parametric.median. Positive means retrieval helps you:
-   * invest in content. Negative means the models already know you but stop
-   * citing you: invest in the sources they read.
+   * Equal-query mean of paired within-provider GROUNDED - PARAMETRIC differences.
+   * Descriptive, not a causal estimate or a subtraction of pooled medians.
    */
   retrievalGap: number | null;
+  retrieval?: Omit<PairedRetrievalEstimate, "queryValues"> | null;
   totalQueries: number;
   shareOfVoice: EntityShare[];
   topSources: SourceRow[];
@@ -107,6 +116,8 @@ export interface QueriesResponse {
 
 export interface SourcesResponse {
   runId: string | null;
+  scoringVersion?: string;
+  extractionVersion?: string;
   rows: SourceRow[];
 }
 

@@ -48,7 +48,7 @@ const createSchema = z.object({
 });
 
 const projectShape = {
-  _count: { select: { brands: true, competitors: true, queries: true } },
+  _count: { select: { brands: { where: { archivedAt: null } }, competitors: { where: { archivedAt: null } }, queries: { where: { archivedAt: null } } } },
   runs: { orderBy: { createdAt: "desc" }, take: 1, select: { createdAt: true } },
 } as const;
 
