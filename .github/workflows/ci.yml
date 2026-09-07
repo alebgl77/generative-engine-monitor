@@ -140,13 +140,14 @@ jobs:
     timeout-minutes: 30
     env:
       CONTAINER_SMOKE_ALLOW_MUTATION: "1"
-      CONTAINER_SMOKE_LOG_DIR: ${{ runner.temp }}/container-smoke-logs
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
 
       - name: Qualify production images and migration gate (mock only)
+        env:
+          CONTAINER_SMOKE_LOG_DIR: ${{ runner.temp }}/container-smoke-logs
         run: timeout --signal=TERM 25m bash scripts/container-smoke.sh
 
       - name: Preserve container failure logs
