@@ -304,7 +304,7 @@ export function SignalFindings({
   );
 }
 
-function MeasurementPassport({
+export function MeasurementPassport({
   finding,
   payload,
 }: {
@@ -326,7 +326,13 @@ function MeasurementPassport({
       if (!navigator.clipboard?.writeText) {
         throw new Error("Le presse-papiers n’est pas disponible dans ce navigateur.");
       }
-      await navigator.clipboard.writeText(markdown);
+      const exportedPayload = {
+        ...payload,
+        exportedAt: new Date().toISOString(),
+      };
+      await navigator.clipboard.writeText(
+        renderMeasurementPassportMarkdown(exportedPayload)
+      );
       setMessage({ tone: "ok", text: "Markdown copié dans le presse-papiers." });
     } catch (error) {
       setMessage({
@@ -343,13 +349,17 @@ function MeasurementPassport({
     setMessage(null);
     let objectUrl: string | null = null;
     try {
-      const blob = new Blob([serializeMeasurementPassport(payload)], {
+      const exportedPayload = {
+        ...payload,
+        exportedAt: new Date().toISOString(),
+      };
+      const blob = new Blob([serializeMeasurementPassport(exportedPayload)], {
         type: "application/json;charset=utf-8",
       });
       objectUrl = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = objectUrl;
-      link.download = measurementPassportFilename(payload);
+      link.download = measurementPassportFilename(exportedPayload);
       link.hidden = true;
       document.body.appendChild(link);
       link.click();

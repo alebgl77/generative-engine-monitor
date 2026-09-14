@@ -35,8 +35,11 @@ jour et conservation des secrets restent à votre charge.
 Pour une mise en production, suivez le [runbook](docs/production-runbook.md) : arrêtez les anciens processus web et workers
 avant la migration, sans déploiement progressif mêlant deux versions. Préparez vos secrets avec
 `.env.production.example` ; ne réutilisez ni `.env.example` ni les données de démonstration. La qualification Docker réelle
-reste **non exécutée** ; voir la
-[limite de validation](docs/production-runbook.md#validation-boundary-and-external-work).
+n’a pas été exécutée sur l’environnement Windows local. Pour ce commit, le job GitHub Actions Ubuntu `containers` qualifie
+cependant les trois images, Compose, le migrateur et sa gate, la readiness web, la santé du worker, l’exécution non-root
+et le parcours HTTP mocké. Restent hors qualification les fournisseurs, credentials et facturations réels, la charge et
+les P99, le multi-réplica et le drain, la restauration et le PITR, le TLS/proxy de production ainsi que la validité
+scientifique externe ; voir la [limite de validation](docs/production-runbook.md#validation-boundary-and-external-work).
 
 Les appels vers de vrais moteurs utilisent vos comptes fournisseurs, transmettent le contenu demandé à leurs API et
 peuvent entraîner des frais. Les limites de volume de l'application ne constituent pas un plafond monétaire.
