@@ -55,9 +55,10 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
       }
     }
 
-    const { jobs } = body.runId
+    const result = body.runId
       ? await rescoreRun(body.runId, scoringVersion)
       : await rescoreProject(project.id, scoringVersion);
+    const { jobs } = result;
 
     await recordAudit({
       userId,
@@ -72,12 +73,12 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
 
     return json(
       {
-        jobs,
+        ...result,
         scoringVersion,
         runId: body.runId ?? null,
-        message: `${jobs} réponse(s) seront rejouées en version ${scoringVersion} à partir du texte déjà stocké : aucune réponse n'est redemandée à un moteur. L'analyse de sentiment consulte en revanche son juge pour les extraits absents de son cache, et ces appels-là sont facturés — une nouvelle version d'extraction change les extraits, donc le cache ne sert plus.`,
+        message: result.promoted ? `Version ${scoringVersion} activée : scores et agrégats déjà complets, aucun appel de fournisseur.` : `${jobs} traitement(s) planifié(s), dont ${result.aggregateJobs} recalcul(s) d'agrégats sans appel de fournisseur. Les replays d'analyse utilisent le texte stocké ; le juge de sentiment peut être facturé pour les extraits absents du cache. Les réponses avec analyse terminale échouée et les runs annulés ne sont pas réparés par ce workflow.`,
       },
-      202
+      jobs > 0 || result.alreadyScheduled > 0 ? 202 : 200
     );
   });
 }

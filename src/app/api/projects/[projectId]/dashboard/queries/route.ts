@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 
 import { json, withProject } from "@/lib/api/route-helpers";
 import { prisma } from "@/lib/prisma";
+import { runForReading } from "@/lib/scoring/read-model";
 import type { QueriesResponse, QueryCell } from "@/types/api";
 
 type RouteContext = { params: Promise<{ projectId: string }> };
@@ -32,12 +33,12 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
   return withProject(request, projectId, async ({ project }) => {
     // A partial or cancelled run measured fewer cells than planned; every cell it
     // did measure was paid for, and its status travels with the rows.
-    const run = await prisma.run.findFirst({
+    const originalRun = await prisma.run.findFirst({
       where: { projectId: project.id, status: { in: ["COMPLETED", "PARTIAL", "CANCELLED"] } },
       orderBy: { createdAt: "desc" },
     });
 
-    if (!run) {
+    if (!originalRun) {
       const empty: QueriesResponse = {
         scoringVersion: project.activeScoringVersion,
         runId: null,
@@ -45,6 +46,8 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
       };
       return json(empty);
     }
+
+    const run = await runForReading(originalRun, project.activeScoringVersion);
 
     const [tasks, citationsPerTask] = await Promise.all([
       prisma.runTask.findMany({
@@ -65,7 +68,7 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
       }),
       prisma.sampleScore.groupBy({
         by: ["taskId"],
-        where: { runId: run.id, scoringVersion: run.scoringVersion },
+        where: { runId: run.id, scoringVersion: run.scoringVersion, sample: { status: "COMPLETED" } },
         _avg: { citationCount: true },
         _count: true,
       }),
@@ -83,7 +86,7 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
     for (const task of tasks) {
       const row: RowAccumulator = rows.get(task.queryId) ?? {
         queryId: task.queryId,
-        text: task.query.text,
+        text: task.queryTextSnapshot,
         cells: [],
         presenceWeighted: 0,
         presenceWeight: 0,
@@ -92,7 +95,7 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
         competitors: new Map<string, CompetitorAccumulator>(),
       };
 
-      const score = task.scores[0];
+      const score = task.scores[0]?.n > 0 ? task.scores[0] : undefined;
       // A cell is emitted for every planned task, scored or not: an empty cell
       // with its status is what tells the reader a provider failed there.
       row.cells.push({
@@ -101,18 +104,20 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
         mode: task.mode,
         taskId: task.id,
         status: task.status,
-        median: score?.median ?? 0,
-        ciLow: score?.ciLow ?? 0,
-        ciHigh: score?.ciHigh ?? 0,
-        stability: score?.stability ?? 0,
+        median: score?.median ?? null,
+        ciLow: score?.ciLow ?? null,
+        ciHigh: score?.ciHigh ?? null,
+        stability: score?.stability ?? null,
         n: score?.n ?? 0,
+        rawN: score?.rawN ?? 0, ciMethod: score?.ciMethod ?? "unavailable",
+        nUnit: score?.ciMethod === "query-cluster-v1" ? "queries" : "samples",
         lowN: score?.lowN ?? true,
         brandPresenceRate: score?.brandPresenceRate ?? 0,
       });
 
       if (score) {
-        row.presenceWeighted += score.brandPresenceRate * score.n;
-        row.presenceWeight += score.n;
+        row.presenceWeighted += score.brandPresenceRate * score.rawN;
+        row.presenceWeight += score.rawN;
       }
 
       const citations = citationsByTask.get(task.id);

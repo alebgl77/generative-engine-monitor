@@ -123,10 +123,11 @@ function ScoreCell({ score }: { score: AxisSummary | null }) {
   if (!score) return <span className="text-muted-foreground">—</span>;
   return (
     <span className="inline-flex flex-col leading-tight">
-      <span className="font-semibold tabular-nums">{formatNumber(score.median, 1)}</span>
+      <span className="font-semibold tabular-nums">{score.median === null ? "—" : formatNumber(score.median, 1)}</span>
       <span className="text-xs text-muted-foreground tabular-nums">
-        IC {formatNumber(score.ciLow, 1)} – {formatNumber(score.ciHigh, 1)}
+        {score.ciLow === null || score.ciHigh === null ? "IC indisponible" : `IC ${formatNumber(score.ciLow, 1)} – ${formatNumber(score.ciHigh, 1)}`}
         {score.lowN ? " · indicatif" : ""}
+        {score.ciMethod ? ` · ${score.ciMethod}` : ""}
       </span>
     </span>
   );

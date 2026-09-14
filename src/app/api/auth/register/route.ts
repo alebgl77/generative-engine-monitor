@@ -6,6 +6,7 @@ import { z } from "zod";
 import { AUDIT_ACTIONS, recordAudit } from "@/lib/audit";
 import { parseBody } from "@/lib/api/route-helpers";
 import { AppError, tooManyRequests } from "@/lib/errors";
+import { getEnv } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { clientIp, forwardedForHeader } from "@/lib/net/client-ip";
 import { prisma } from "@/lib/prisma";
@@ -71,6 +72,13 @@ function errorResponse(err: unknown): NextResponse {
 
 export async function POST(request: NextRequest) {
   try {
+    if (!getEnv().REGISTRATION_ENABLED) {
+      return NextResponse.json(
+        { error: "Les inscriptions sont fermées." },
+        { status: 403 }
+      );
+    }
+
     // Consumed first, so a caller inventing addresses cannot step around it.
     await ensureBucket(
       "register:global",

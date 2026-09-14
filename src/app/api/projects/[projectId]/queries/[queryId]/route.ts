@@ -17,7 +17,7 @@ const updateSchema = z.object({
  * 404 rather than a cross-project write. */
 async function assertQueryBelongs(projectId: string, queryId: string): Promise<void> {
   const query = await prisma.query.findFirst({
-    where: { id: queryId, projectId },
+    where: { id: queryId, projectId, archivedAt: null },
     select: { projectId: true },
   });
   assertBelongs(query, projectId, "Requête");
@@ -35,7 +35,7 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
 
     if (Object.keys(data).length === 0) throw badRequest("Aucun champ à mettre à jour");
 
-    const query = await prisma.query.update({ where: { id: queryId }, data });
+    const query = await prisma.query.update({ where: { id: queryId, projectId: project.id, archivedAt: null }, data });
     return json(query);
   });
 }
@@ -44,7 +44,7 @@ export async function DELETE(request: NextRequest, { params }: RouteContext) {
   const { projectId, queryId } = await params;
   return withProject(request, projectId, async ({ project }) => {
     await assertQueryBelongs(project.id, queryId);
-    await prisma.query.deleteMany({ where: { id: queryId, projectId: project.id } });
+    await prisma.query.updateMany({ where: { id: queryId, projectId: project.id, archivedAt: null }, data: { archivedAt: new Date(), isActive: false } });
     return json({ success: true });
   });
 }

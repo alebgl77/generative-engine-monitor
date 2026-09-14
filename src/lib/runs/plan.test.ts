@@ -14,16 +14,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   prisma: {
-    project: { findUniqueOrThrow: vi.fn() },
+    project: { findUniqueOrThrow: vi.fn(), findMany: vi.fn() },
     providerCredential: { findMany: vi.fn() },
     provider: { findUnique: vi.fn() },
     $transaction: vi.fn(),
   },
   enqueue: vi.fn(),
+  createRun: vi.fn(), createTask: vi.fn(), createSample: vi.fn(), lock: vi.fn(),
+  countSamples: vi.fn(), countJobs: vi.fn(), countRuns: vi.fn(),
+  budgetFind: vi.fn(), budgetUpsert: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({ prisma: mocks.prisma }));
 vi.mock("@/lib/queue/client", () => ({ enqueue: mocks.enqueue }));
+vi.mock("@/lib/env", () => ({ modelFor: () => "configured-model" }));
 
 import { planRun } from "@/lib/runs/plan";
 
@@ -55,14 +59,28 @@ function transactionStub() {
   let sampleSeq = 0;
   return async (fn: (tx: unknown) => Promise<string>) =>
     fn({
-      run: { create: async () => ({ id: "run-1" }) },
-      runTask: { create: async () => ({ id: `task-${++taskSeq}` }) },
-      runSample: { create: async () => ({ id: `sample-${++sampleSeq}` }) },
+      project: mocks.prisma.project,
+      provider: mocks.prisma.provider,
+      providerCredential: mocks.prisma.providerCredential,
+      $queryRaw: mocks.lock,
+      run: { create: mocks.createRun, count: mocks.countRuns },
+      job: { count: mocks.countJobs },
+      rateLimitBucket: { findUnique: mocks.budgetFind, upsert: mocks.budgetUpsert },
+      runTask: { create: mocks.createTask.mockImplementation(async () => ({ id: `task-${++taskSeq}` })) },
+      runSample: { create: mocks.createSample.mockImplementation(async () => ({ id: `sample-${++sampleSeq}` })), count: mocks.countSamples },
     });
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.lock.mockResolvedValue([{ id: "u1" }]);
+  mocks.createRun.mockResolvedValue({ id: "run-1" });
+  mocks.countSamples.mockResolvedValue(0);
+  mocks.countJobs.mockResolvedValue(0);
+  mocks.countRuns.mockResolvedValue(0);
+  mocks.budgetFind.mockResolvedValue(null);
+  mocks.budgetUpsert.mockResolvedValue({});
+  mocks.prisma.project.findMany.mockResolvedValue([{ id: "proj-1" }]);
   mocks.prisma.project.findUniqueOrThrow.mockResolvedValue({
     id: "proj-1",
     userId: "u1",
@@ -71,10 +89,47 @@ beforeEach(() => {
     targetCountry: "FR",
     targetLanguage: "fr",
     queries: [{ id: "q1", text: "meilleur CRM" }],
+    brands: [{ id: "b1", name: "Original", aliases: ["Alias"], domain: "original.fr" }],
+    competitors: [],
     user: { id: "u1" },
   });
   mocks.prisma.provider.findUnique.mockResolvedValue(MOCK_PROVIDER);
   mocks.prisma.$transaction.mockImplementation(transactionStub());
+});
+
+describe("planRun immutable plan and budgets", () => {
+  beforeEach(() => mocks.prisma.providerCredential.findMany.mockResolvedValue([{ provider: OPENAI_PROVIDER, isValid: true }]));
+
+  it("locks the user before reading mutable plan and quota state", async () => {
+    await planRun("proj-1");
+    expect(mocks.lock.mock.invocationCallOrder[0]).toBeLessThan(mocks.prisma.project.findUniqueOrThrow.mock.invocationCallOrder[1]);
+    expect(mocks.lock.mock.invocationCallOrder[0]).toBeLessThan(mocks.countSamples.mock.invocationCallOrder[0]);
+    expect(mocks.countSamples.mock.invocationCallOrder[0]).toBeLessThan(mocks.createRun.mock.invocationCallOrder[0]);
+  });
+
+  it("stores configuration, text, locale and a nonsecret specification hash before queueing", async () => {
+    await planRun("proj-1");
+    const run = mocks.createRun.mock.calls[0][0].data;
+    expect(run.configSnapshot).toMatchObject({ version: 1, reconstructed: false,
+      locale: { country: "FR", language: "fr" },
+      entities: [{ id: "b1", name: "Original", domain: "original.fr", aliases: ["Alias"], kind: "BRAND" }],
+      providers: [{ id: "p-openai", code: "openai", model: "configured-model" }],
+    });
+    expect(mocks.createTask.mock.calls[0][0].data).toMatchObject({ queryTextSnapshot: "meilleur CRM", localeSnapshot: { country: "FR", language: "fr" } });
+    expect(mocks.createSample.mock.calls[0][0].data.promptHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(mocks.enqueue.mock.calls[0][0][0].payload.model).toBe("configured-model");
+    expect(mocks.prisma.project.findUniqueOrThrow.mock.calls[1][0].include.queries.where.archivedAt).toBeNull();
+  });
+
+  it("refuses exhausted active and daily allowances before creating any sample", async () => {
+    mocks.countRuns.mockResolvedValue(3);
+    await expect(planRun("proj-1")).rejects.toThrow(/simultanées/);
+    expect(mocks.createRun).not.toHaveBeenCalled();
+    mocks.countRuns.mockResolvedValue(0);
+    mocks.countSamples.mockResolvedValue(10000);
+    await expect(planRun("proj-1")).rejects.toThrow(/quotidienne/);
+    expect(mocks.createSample).not.toHaveBeenCalled();
+  });
 });
 
 describe("planRun engine selection", () => {

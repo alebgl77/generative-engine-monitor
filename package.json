@@ -11,6 +11,7 @@
     "build": "next build",
     "start": "next start",
     "worker": "tsx src/worker/main.ts",
+    "worker:health": "node scripts/worker-health.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -25,13 +26,15 @@
     "setup": "npm install && prisma generate && prisma migrate deploy"
   },
   "dependencies": {
+    "@phosphor-icons/react": "2.1.10",
     "@prisma/client": "^5.22.0",
     "bcryptjs": "^3.0.3",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.0",
     "dotenv": "^16.4.5",
+    "geist": "1.7.2",
     "lucide-react": "^1.28.0",
-    "next": "16.3.0",
+    "next": "16.3.5",
     "next-auth": "^4.24.15",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
@@ -46,13 +49,13 @@
     "@types/node": "^22.20.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
-    "@vitest/coverage-v8": "^4.1.10",
+    "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^9.39.5",
-    "eslint-config-next": "16.3.0",
+    "eslint-config-next": "16.3.5",
     "postcss": "^8",
     "prisma": "^5.22.0",
     "tailwindcss": "^3.4.1",
     "typescript": "^5",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }

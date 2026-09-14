@@ -9,15 +9,17 @@ import { codeFromThrown, isRetryable } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { getAllProviders } from "@/lib/providers/registry";
-import { claim, fail, heartbeat } from "@/lib/queue/client";
+import { claim, fail, heartbeat, LostLease } from "@/lib/queue/client";
 import { Semaphore, bucketKeyForProvider, ensureBucket } from "@/lib/queue/ratelimit";
 import { runSweep } from "@/lib/queue/sweeper";
 import { INTERNAL_PROVIDER_CODE, LEASE, type ClaimedJob, type JobHandler } from "@/lib/queue/types";
 import { aggregateRunHandler } from "@/worker/handlers/aggregateRun";
 import { aggregateTaskHandler } from "@/worker/handlers/aggregateTask";
 import { rescoreSampleHandler } from "@/worker/handlers/rescoreSample";
-import { runSampleHandler } from "@/worker/handlers/runSample";
+import { runSampleHandler, failSampleJob } from "@/worker/handlers/runSample";
 import { installShutdownHandlers, type InFlightJob } from "@/worker/shutdown";
+import { applyHeartbeat, claimKey, forgetClaim } from "@/worker/inflight";
+import { clearWorkerHealth, recordWorkerHealthy } from "@/worker/health";
 
 /**
  * Worker entry point.
@@ -98,26 +100,12 @@ async function buildLimits(): Promise<Map<string, Semaphore>> {
   return semaphores;
 }
 
-async function beat(inFlight: Map<string, InFlightJob>, workerId: string): Promise<void> {
-  const ids = Array.from(inFlight.keys());
-  if (ids.length === 0) return;
+async function beat(inFlight: Map<string, InFlightJob>): Promise<void> {
+  const entries = Array.from(inFlight.values());
+  if (entries.length === 0) return;
 
   try {
-    const { alive, cancelled } = await heartbeat(ids, workerId);
-    const aliveIds = new Set(alive);
-    const cancelledIds = new Set(cancelled);
-
-    for (const id of ids) {
-      const entry = inFlight.get(id);
-      if (!entry || entry.controller.signal.aborted) continue;
-      if (cancelledIds.has(id)) {
-        logger.info("run cancelled, aborting job", { jobId: id });
-        entry.controller.abort();
-      } else if (!aliveIds.has(id)) {
-        logger.warn("lease lost, aborting job", { jobId: id });
-        entry.controller.abort();
-      }
-    }
+    applyHeartbeat(entries, await heartbeat(entries.map((entry) => entry.lease)));
   } catch (err) {
     // A blip on the heartbeat is not proof the lease is gone; the sweeper is the
     // authority on that, so nothing is aborted here.
@@ -136,7 +124,13 @@ async function sweep(): Promise<void> {
   }
 }
 
+async function markHealthy(): Promise<void> {
+  try { await recordWorkerHealthy(); }
+  catch (error) { logger.error("worker health file update failed", { error }); }
+}
+
 async function main(): Promise<void> {
+  await clearWorkerHealth();
   const env = getEnv();
   const workerId = env.WORKER_ID || `${os.hostname()}-${process.pid}`;
 
@@ -150,24 +144,25 @@ async function main(): Promise<void> {
 
   const loop = new AbortController();
   const inFlight = new Map<string, InFlightJob>();
-  const shutdown = installShutdownHandlers(loop, () => Array.from(inFlight.values()));
+  const shutdown = installShutdownHandlers(loop, () => Array.from(inFlight.values()), clearWorkerHealth);
 
-  const heartbeatTimer = setInterval(() => void beat(inFlight, workerId), LEASE.heartbeatSec * 1000);
+  const heartbeatTimer = setInterval(() => void beat(inFlight), LEASE.heartbeatSec * 1000);
   const sweepTimer = setInterval(() => void sweep(), LEASE.sweepIntervalSec * 1000);
 
   function dispatch(job: ClaimedJob): void {
     const controller = new AbortController();
     const semaphore = semaphores.get(job.providerCode) ?? internal;
-    const entry: InFlightJob = { id: job.id, controller, done: Promise.resolve() };
-    inFlight.set(job.id, entry);
+    const entry: InFlightJob = { id: job.id, lease: job, controller, done: Promise.resolve() };
+    inFlight.set(claimKey(job), entry);
 
     entry.done = semaphore
       .run(async () => {
         try {
           await HANDLERS[job.kind](job, { signal: controller.signal, workerId });
         } catch (err) {
+          if (err instanceof LostLease) return;
           logger.error("job handler threw", { jobId: job.id, kind: job.kind, error: err });
-          await fail(job.id, {
+          await (job.kind === "RUN_SAMPLE" ? failSampleJob : fail)(job, {
             code: codeFromThrown(err),
             message: err instanceof Error ? err.message : String(err),
             retryable: isRetryable(err),
@@ -176,7 +171,7 @@ async function main(): Promise<void> {
       })
       .catch((err) => logger.error("job could not be closed", { jobId: job.id, error: err }))
       .finally(() => {
-        inFlight.delete(job.id);
+        forgetClaim(inFlight, entry);
       });
   }
 
@@ -184,6 +179,12 @@ async function main(): Promise<void> {
     while (!shutdown.stopping()) {
       const free = Array.from(semaphores.entries()).filter(([, semaphore]) => semaphore.free > 0);
       if (free.length === 0) {
+        try {
+          await prisma.$queryRaw`SELECT 1`;
+          if (!shutdown.stopping()) await markHealthy();
+        } catch (error) {
+          logger.error("worker liveness probe failed", { error });
+        }
         await sleep(BUSY_SLEEP_MS, loop.signal);
         continue;
       }
@@ -197,6 +198,7 @@ async function main(): Promise<void> {
           providerCodes: free.map(([code]) => code),
           limit: Math.min(env.WORKER_BATCH_SIZE, capacity),
         });
+        if (!shutdown.stopping()) await markHealthy();
       } catch (err) {
         logger.error("claim failed", { error: err });
         await sleep(IDLE_SLEEP_MS, loop.signal);

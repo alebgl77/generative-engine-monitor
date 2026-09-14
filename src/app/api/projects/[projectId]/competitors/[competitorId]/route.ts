@@ -36,7 +36,7 @@ const updateSchema = z.object({
  * a 404 rather than a cross-project write. */
 async function assertCompetitorBelongs(projectId: string, competitorId: string): Promise<void> {
   const competitor = await prisma.competitor.findFirst({
-    where: { id: competitorId, projectId },
+    where: { id: competitorId, projectId, archivedAt: null },
     select: { projectId: true },
   });
   assertBelongs(competitor, projectId, "Concurrent");
@@ -56,7 +56,7 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
     if (Object.keys(data).length === 0) throw badRequest("Aucun champ à mettre à jour");
 
     const competitor = await prisma.competitor.update({
-      where: { id: competitorId },
+      where: { id: competitorId, projectId: project.id, archivedAt: null },
       data,
     });
     return json(competitor);
@@ -67,8 +67,9 @@ export async function DELETE(request: NextRequest, { params }: RouteContext) {
   const { projectId, competitorId } = await params;
   return withProject(request, projectId, async ({ project }) => {
     await assertCompetitorBelongs(project.id, competitorId);
-    await prisma.competitor.deleteMany({
-      where: { id: competitorId, projectId: project.id },
+    await prisma.competitor.updateMany({
+      where: { id: competitorId, projectId: project.id, archivedAt: null },
+      data: { archivedAt: new Date() },
     });
     return json({ success: true });
   });

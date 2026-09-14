@@ -1,13 +1,14 @@
 import type { NextRequest } from "next/server";
-import type { Prisma, Run, TaskScore } from "@prisma/client";
+import type { Prisma, Run } from "@prisma/client";
 import { z } from "zod";
 
 import { json, parseQuery, withProject } from "@/lib/api/route-helpers";
 import { notFound } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import { runForReading, analysisCoverage, toAxisSummary } from "@/lib/scoring/read-model";
+import { readRunSnapshot } from "@/lib/runs/snapshots";
 import type { ScoreContribution } from "@/lib/scoring/types";
 import type {
-  AxisSummary,
   RunDetailResponse,
   RunTaskCounts,
   RunTaskSummary,
@@ -81,18 +82,6 @@ function emptyTaskCounts(): RunTaskCounts {
   };
 }
 
-function toAxisSummary(score: TaskScore | undefined): AxisSummary | null {
-  if (!score) return null;
-  return {
-    median: score.median,
-    ciLow: score.ciLow,
-    ciHigh: score.ciHigh,
-    stability: score.stability,
-    n: score.n,
-    lowN: score.lowN,
-    brandPresenceRate: score.brandPresenceRate,
-  };
-}
 
 /** The breakdown is persisted as scored, and rendered as persisted. */
 function toContributions(value: Prisma.JsonValue | undefined): ScoreContribution[] {
@@ -101,6 +90,7 @@ function toContributions(value: Prisma.JsonValue | undefined): ScoreContribution
 
 function toSampleDetail(sample: SampleRow, run: Run): SampleDetail {
   const score = sample.scores.find((s) => s.scoringVersion === run.scoringVersion);
+  const names = new Map(readRunSnapshot(run.configSnapshot).entities.map((entity) => [entity.id, entity.name]));
 
   // Evidence is unique per extraction version; a sample replayed under a newer
   // extractor holds both generations of rows, and only the run's own is its own.
@@ -109,7 +99,7 @@ function toSampleDetail(sample: SampleRow, run: Run): SampleDetail {
       .filter((m) => m.extractionVersion === run.extractionVersion)
       .map((m) => ({
         entityId: m.brandId,
-        entityName: m.brand.name,
+        entityName: names.get(m.brandId) ?? "[entité historique indisponible]",
         kind: "BRAND" as const,
         mentionType: m.mentionType,
         charOffset: m.charOffset,
@@ -122,7 +112,7 @@ function toSampleDetail(sample: SampleRow, run: Run): SampleDetail {
       .filter((m) => m.extractionVersion === run.extractionVersion)
       .map((m) => ({
         entityId: m.competitorId,
-        entityName: m.competitor.name,
+        entityName: names.get(m.competitorId) ?? "[entité historique indisponible]",
         kind: "COMPETITOR" as const,
         mentionType: m.mentionType,
         charOffset: m.charOffset,
@@ -166,7 +156,7 @@ function toTaskSummary(task: TaskDetail, run: Run): RunTaskSummary {
     id: task.id,
     mode: task.mode,
     status: task.status,
-    query: { id: task.query.id, text: task.query.text },
+    query: { id: task.query.id, text: task.queryTextSnapshot },
     provider: { code: task.provider.code, label: task.provider.label },
     samples: {
       total: task.plannedSamples,
@@ -183,10 +173,12 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
   return withProject(request, projectId, async ({ project }) => {
     const { limit, offset } = parseQuery(request, querySchema);
 
-    const run = await prisma.run.findFirst({
+    const originalRun = await prisma.run.findFirst({
       where: { id: runId, projectId: project.id },
     });
-    if (!run) throw notFound("Analyse");
+    if (!originalRun) throw notFound("Analyse");
+
+    const run = await runForReading(originalRun, project.activeScoringVersion);
 
     const [taskRows, grouped] = await Promise.all([
       prisma.runTask.findMany({
@@ -229,6 +221,7 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
         totalSamples: run.totalSamples,
         doneSamples: run.doneSamples,
         failedSamples: run.failedSamples,
+        ...await analysisCoverage(run),
       },
       createdAt: run.createdAt.toISOString(),
       startedAt: run.startedAt?.toISOString() ?? null,

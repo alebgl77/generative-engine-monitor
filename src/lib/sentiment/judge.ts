@@ -9,6 +9,8 @@ import { logger } from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { getProvider } from "@/lib/providers/registry";
 import { bucketKeyForProvider, tryConsume } from "@/lib/queue/ratelimit";
+import { assertLease, LostLease } from "@/lib/queue/client";
+import type { JobLease } from "@/lib/queue/types";
 
 /**
  * Sentiment judging, content-addressed.
@@ -23,7 +25,7 @@ import { bucketKeyForProvider, tryConsume } from "@/lib/queue/ratelimit";
  * is unavailable would turn a successful sample into a wasted one.
  */
 
-export const JUDGE_VERSION = "judge-v1";
+export const JUDGE_VERSION = "judge-v2-context";
 
 export interface SentimentVerdict {
   sentiment: Sentiment;
@@ -38,18 +40,6 @@ export interface JudgeItem {
 }
 
 const SENTIMENT_VALUES = ["POSITIVE", "NEUTRAL", "NEGATIVE", "MIXED"] as const;
-
-/**
- * Higher is more negative. A split opinion is not an endorsement, so MIXED
- * outranks NEUTRAL: when two excerpts disagree about the same entity, the
- * darker reading is the one that survives.
- */
-const NEGATIVITY: Record<Sentiment, number> = {
-  POSITIVE: 0,
-  NEUTRAL: 1,
-  MIXED: 2,
-  NEGATIVE: 3,
-};
 
 /** Excerpts longer than this add prompt cost without adding signal. */
 const MAX_CONTEXT_CHARS = 400;
@@ -66,7 +56,14 @@ const verdictSchema = z.object({
 const replySchema = z.array(verdictSchema);
 
 function normalizeContext(context: string): string {
-  return context.replace(/\s+/g, " ").trim().slice(0, MAX_CONTEXT_CHARS);
+  return context.replace(/\s+/g, " ").trim();
+}
+
+/** Lookup identity for an occurrence's context, never an entity-wide verdict. */
+export function sentimentKey(entityId: string, context: string): string {
+  return createHash("sha256")
+    .update(JSON.stringify([entityId, normalizeContext(context)]), "utf8")
+    .digest("hex");
 }
 
 function cacheKeyFor(entityName: string, context: string): string {
@@ -79,17 +76,18 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+/** Missing or failed judgments are absent, not neutral. Keys use sentimentKey. */
 export async function judgeSentiment(
   items: JudgeItem[],
-  opts: { userId: string; signal?: AbortSignal }
+  opts: { userId: string; signal?: AbortSignal; lease?: JobLease }
 ): Promise<Map<string, SentimentVerdict>> {
   const empty = new Map<string, SentimentVerdict>();
   if (!getEnv().SENTIMENT_ENABLED || items.length === 0) return empty;
 
   const normalized = items.map((item) => {
-    const context = normalizeContext(item.context);
+    const context = normalizeContext(item.context).slice(0, MAX_CONTEXT_CHARS);
     return {
-      entityId: item.entityId,
+      sentimentKey: sentimentKey(item.entityId, item.context),
       entityName: item.entityName,
       context,
       cacheKey: cacheKeyFor(item.entityName, context),
@@ -117,36 +115,29 @@ export async function judgeSentiment(
       });
     }
   } catch (err) {
-    logger.warn("sentiment cache unreadable", { error: err instanceof Error ? err.message : String(err) });
+    logger.warn("sentiment cache unreadable", { errorType: err instanceof Error ? err.name : "unknown" });
     return empty;
   }
 
   const misses = Array.from(distinct.entries()).filter(([key]) => !verdicts.has(key));
   if (misses.length > 0) {
     const fresh = await judgeMisses(misses.slice(0, MAX_ITEMS_PER_CALL), opts);
-    if (fresh === null) return empty;
-    fresh.forEach((verdict, key) => verdicts.set(key, verdict));
+    fresh?.forEach((verdict, key) => verdicts.set(key, verdict));
   }
 
-  const byEntity = new Map<string, SentimentVerdict>();
+  const byContext = new Map<string, SentimentVerdict>();
   for (const item of normalized) {
     const verdict = verdicts.get(item.cacheKey);
     if (!verdict) continue;
-    const current = byEntity.get(item.entityId);
-    if (!current || isMoreNegative(verdict, current)) byEntity.set(item.entityId, verdict);
+    byContext.set(item.sentimentKey, verdict);
   }
-  return byEntity;
-}
-
-function isMoreNegative(candidate: SentimentVerdict, current: SentimentVerdict): boolean {
-  const delta = NEGATIVITY[candidate.sentiment] - NEGATIVITY[current.sentiment];
-  return delta > 0 || (delta === 0 && candidate.score < current.score);
+  return byContext;
 }
 
 /** Returns null when the judge could not be consulted at all. */
 async function judgeMisses(
   misses: [string, { entityName: string; context: string }][],
-  opts: { userId: string; signal?: AbortSignal }
+  opts: { userId: string; signal?: AbortSignal; lease?: JobLease }
 ): Promise<Map<string, SentimentVerdict> | null> {
   const env = getEnv();
   const providerCode = env.SENTIMENT_JUDGE_PROVIDER;
@@ -214,13 +205,23 @@ async function judgeMisses(
     }
 
     if (rows.length > 0) {
-      await prisma.sentimentJudgment.createMany({ data: rows, skipDuplicates: true });
+      const lease = opts.lease;
+      if (lease) {
+        await prisma.$transaction(async (tx) => {
+          await assertLease(tx, lease);
+          await tx.sentimentJudgment.createMany({ data: rows, skipDuplicates: true });
+          await assertLease(tx, lease);
+        });
+      } else {
+        await prisma.sentimentJudgment.createMany({ data: rows, skipDuplicates: true });
+      }
     }
     return fresh;
   } catch (err) {
+    if (err instanceof LostLease) throw err;
     logger.warn("sentiment judge unavailable", {
       providerCode,
-      error: err instanceof Error ? err.message : String(err),
+      errorType: err instanceof Error ? err.name : "unknown",
     });
     return null;
   }

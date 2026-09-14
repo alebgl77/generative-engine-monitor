@@ -7,10 +7,15 @@ import type {
   TaskStatus,
 } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { enqueue } from "@/lib/queue/client";
+import { assertLease, complete, enqueue } from "@/lib/queue/client";
+import type { JobLease } from "@/lib/queue/types";
+import { clusterBootstrap } from "@/lib/scoring/cluster-stats";
+import { readRunSnapshot } from "@/lib/runs/snapshots";
+import { lockRunOwner } from "@/lib/runs/limits";
+import { tryPromoteScoringVersion } from "@/lib/scoring/rescore";
 import { INTERNAL_PROVIDER_CODE, type AggregateRunPayload } from "@/lib/queue/types";
 import { getScoringVersion } from "@/lib/scoring/registry";
-import { aggregate, seedFor } from "@/lib/scoring/stats";
+import { seedFor } from "@/lib/scoring/stats";
 import { LOW_N_RUN, LOW_N_TASK } from "@/lib/scoring/types";
 import { logger } from "@/lib/logger";
 
@@ -81,11 +86,11 @@ interface TaskScoreInput {
 }
 
 /** The task-grain distribution. Seeded from the task identity, so it replays identically. */
-async function upsertTaskScore(input: TaskScoreInput): Promise<void> {
+async function upsertTaskScore(input: TaskScoreInput, db: Prisma.TransactionClient): Promise<void> {
   const { taskId, scoringVersion, scores } = input;
 
-  const summary = aggregate(
-    scores.map((s) => s.score),
+  const summary = clusterBootstrap(
+    scores.map((s) => ({ queryId: taskId, providerId: taskId, value: s.score })),
     {
       seed: seedFor([taskId, input.mode, scoringVersion]),
       lowNThreshold: LOW_N_TASK,
@@ -99,29 +104,31 @@ async function upsertTaskScore(input: TaskScoreInput): Promise<void> {
   const data = {
     runId: input.runId,
     n: summary.n,
+    rawN: summary.rawN,
     nFailed: input.nFailed,
-    median: summary.median,
-    mean: summary.mean,
+    median: summary.median!,
+    mean: summary.mean!,
     ciLow: summary.ciLow,
     ciHigh: summary.ciHigh,
-    mad: summary.mad,
-    iqr: summary.iqr,
-    stability: summary.stability,
+    ciMethod: summary.method,
+    mad: summary.mad!,
+    iqr: summary.iqr!,
+    stability: summary.stability!,
     lowN: summary.lowN,
     brandPresenceRate,
     bootstrapSeed: summary.bootstrapSeed,
     computedAt: new Date(),
   };
 
-  await prisma.taskScore.upsert({
+  await db.taskScore.upsert({
     where: { taskId_scoringVersion: { taskId, scoringVersion } },
     update: data,
     create: { taskId, scoringVersion, ...data },
   });
 }
 
-export async function aggregateTask(taskId: string, scoringVersion: string): Promise<void> {
-  const task = await prisma.runTask.findUnique({
+async function aggregateTaskData(db: Prisma.TransactionClient, taskId: string, scoringVersion: string, lease?: JobLease, promoteVersion = false): Promise<void> {
+  const task = await db.runTask.findUnique({
     where: { id: taskId },
     select: { id: true, runId: true, projectId: true, mode: true },
   });
@@ -129,9 +136,10 @@ export async function aggregateTask(taskId: string, scoringVersion: string): Pro
     logger.warn("aggregate task: task no longer exists", { taskId });
     return;
   }
+  if (lease && task.runId !== lease.runId) throw new Error("Aggregate task does not belong to the leased run");
 
   const [scores, statusRows] = await Promise.all([
-    prisma.sampleScore.findMany({
+    db.sampleScore.findMany({
       // A sample cancelled after its analysis was written leaves a score row
       // behind while the counters exclude it; only COMPLETED samples belong in
       // the distribution.
@@ -143,7 +151,7 @@ export async function aggregateTask(taskId: string, scoringVersion: string): Pro
       // different confidence interval.
       orderBy: { sampleId: "asc" },
     }),
-    prisma.runSample.groupBy({
+    db.runSample.groupBy({
       by: ["status"],
       where: { taskId },
       _count: { _all: true },
@@ -160,10 +168,11 @@ export async function aggregateTask(taskId: string, scoringVersion: string): Pro
       scoringVersion,
       scores,
       nFailed: counts.failed,
-    });
+    }, db);
   }
 
-  const status = taskStatusFrom(counts);
+  const missingAnalysis = Math.max(0, counts.succeeded - scores.length);
+  const status = taskStatusFrom({ ...counts, succeeded: scores.length, failed: counts.failed + missingAnalysis });
   if (!status) {
     logger.info("task scored, samples still in flight", {
       taskId,
@@ -174,7 +183,8 @@ export async function aggregateTask(taskId: string, scoringVersion: string): Pro
     return;
   }
 
-  await prisma.$transaction(async (tx) => {
+  await (async () => {
+    const tx = db;
     // The guard makes the countdown exactly-once: a retried job, or a rescore of
     // an already finished run, finds no task left to transition and leaves
     // pendingTasks alone.
@@ -191,7 +201,7 @@ export async function aggregateTask(taskId: string, scoringVersion: string): Pro
     });
     if (run.pendingTasks > 0) return;
 
-    const payload: AggregateRunPayload = { runId: task.runId, scoringVersion };
+    const payload: AggregateRunPayload = { runId: task.runId, scoringVersion, ...(promoteVersion ? { promoteVersion: true } : {}) };
     await enqueue(
       [
         {
@@ -200,11 +210,12 @@ export async function aggregateTask(taskId: string, scoringVersion: string): Pro
           projectId: run.projectId,
           providerCode: INTERNAL_PROVIDER_CODE,
           payload,
+          dedupeKey: `aggregate-run:${task.runId}:${scoringVersion}:query-cluster-v1`,
         },
       ],
       tx as unknown as Prisma.TransactionClient
     );
-  });
+  })();
 
   logger.info("task aggregated", {
     taskId,
@@ -342,15 +353,15 @@ function computeShares(
 }
 
 /**
- * Writes the task grain of a run that ends on a cancellation. Its tasks never
- * reach the aggregation queue, so without this the calls already paid for would
- * be reported at the run grain only.
+ * Rebuilds the task grain in the same transaction as the run grain, including
+ * cancelled runs and database-only upgrades of historical interval methods.
  */
-async function persistCancelledTaskScores(
+async function persistTaskScores(
   runId: string,
   scoringVersion: string,
   scores: { taskId: string; score: number; brandPresent: boolean }[],
-  modeByTask: Map<string, SamplingMode>
+  modeByTask: Map<string, SamplingMode>,
+  db: Prisma.TransactionClient
 ): Promise<void> {
   const byTask = new Map<string, { score: number; brandPresent: boolean }[]>();
   for (const score of scores) {
@@ -360,7 +371,7 @@ async function persistCancelledTaskScores(
   }
   if (byTask.size === 0) return;
 
-  const statusRows = await prisma.runSample.groupBy({
+  const statusRows = await db.runSample.groupBy({
     by: ["taskId", "status"],
     where: { runId },
     _count: { _all: true },
@@ -381,14 +392,14 @@ async function persistCancelledTaskScores(
       scoringVersion,
       scores: taskScores,
       nFailed: failedByTask.get(taskId) ?? 0,
-    });
+    }, db);
   }
 }
 
-export async function aggregateRun(runId: string, scoringVersion: string): Promise<void> {
-  const run = await prisma.run.findUnique({
+async function aggregateRunData(db: Prisma.TransactionClient, runId: string, scoringVersion: string, promoteVersion = false): Promise<void> {
+  const run = await db.run.findUnique({
     where: { id: runId },
-    select: { id: true, projectId: true, status: true },
+    select: { id: true, projectId: true, status: true, configSnapshot: true, scoringVersion: true },
   });
   if (!run) {
     logger.warn("aggregate run: run no longer exists", { runId });
@@ -397,9 +408,9 @@ export async function aggregateRun(runId: string, scoringVersion: string): Promi
 
   const extractionVersion = getScoringVersion(scoringVersion).extractionVersion;
 
-  const [tasks, scores, brands, competitors, statusRows] = await Promise.all([
-    prisma.runTask.findMany({ where: { runId }, select: { id: true, mode: true } }),
-    prisma.sampleScore.findMany({
+  const [tasks, scores, statusRows] = await Promise.all([
+    db.runTask.findMany({ where: { runId }, select: { id: true, mode: true, queryId: true, providerId: true } }),
+    db.sampleScore.findMany({
       // Only COMPLETED samples: a cancellation racing the analysis write can
       // leave a score row the counters never counted.
       where: { runId, scoringVersion, sample: { status: "COMPLETED" } },
@@ -408,20 +419,13 @@ export async function aggregateRun(runId: string, scoringVersion: string): Promi
       // read would make a replayed run report a different interval.
       orderBy: { sampleId: "asc" },
     }),
-    prisma.brand.findMany({
-      where: { projectId: run.projectId },
-      select: { id: true, name: true, domain: true },
-    }),
-    prisma.competitor.findMany({
-      where: { projectId: run.projectId },
-      select: { id: true, name: true, domain: true },
-    }),
-    prisma.runSample.groupBy({ by: ["status"], where: { runId }, _count: { _all: true } }),
+    db.runSample.groupBy({ by: ["status"], where: { runId }, _count: { _all: true } }),
   ]);
 
   const modeByTask = new Map(tasks.map((task) => [task.id, task.mode]));
+  const taskById = new Map(tasks.map((task) => [task.id, task]));
 
-  const scoresByMode = new Map<SamplingMode, { sampleId: string; score: number; brandPresent: boolean }[]>();
+  const scoresByMode = new Map<SamplingMode, { sampleId: string; taskId: string; score: number; brandPresent: boolean }[]>();
   const samplesByTask = new Map<string, string[]>();
   for (const score of scores) {
     const mode = modeByTask.get(score.taskId);
@@ -435,8 +439,8 @@ export async function aggregateRun(runId: string, scoringVersion: string): Promi
   }
 
   for (const [mode, modeScores] of Array.from(scoresByMode)) {
-    const summary = aggregate(
-      modeScores.map((s) => s.score),
+    const summary = clusterBootstrap(
+      modeScores.map((s) => { const task = taskById.get(s.taskId)!; return { queryId: task.queryId, providerId: task.providerId, value: s.score }; }),
       {
         seed: seedFor([runId, mode, scoringVersion]),
         lowNThreshold: LOW_N_RUN,
@@ -448,57 +452,50 @@ export async function aggregateRun(runId: string, scoringVersion: string): Promi
 
     const data = {
       n: summary.n,
-      median: summary.median,
-      mean: summary.mean,
+      rawN: summary.rawN,
+      cellN: summary.cellN,
+      ciMethod: summary.method,
+      median: summary.median!,
+      mean: summary.mean!,
       ciLow: summary.ciLow,
       ciHigh: summary.ciHigh,
-      mad: summary.mad,
-      iqr: summary.iqr,
-      stability: summary.stability,
+      mad: summary.mad!,
+      iqr: summary.iqr!,
+      stability: summary.stability!,
       lowN: summary.lowN,
       brandPresenceRate,
       bootstrapSeed: summary.bootstrapSeed,
       computedAt: new Date(),
     };
 
-    await prisma.runScore.upsert({
+    await db.runScore.upsert({
       where: { runId_mode_scoringVersion: { runId, mode, scoringVersion } },
       update: data,
       create: { runId, mode, scoringVersion, ...data },
     });
   }
 
-  if (run.status === "CANCELLING" || run.status === "CANCELLED") {
-    await persistCancelledTaskScores(runId, scoringVersion, scores, modeByTask);
-  }
+  // Rebuild task aggregates too: a free method refresh must not depend on a
+  // separately scheduled task job winning a race with run aggregation.
+  await persistTaskScores(runId, scoringVersion, scores, modeByTask, db);
 
-  const entities: EntityRef[] = [
-    ...brands.map((b) => ({
-      id: b.id,
-      name: b.name,
-      kind: "BRAND" as EntityKind,
-      domain: b.domain ? normalizeDomain(b.domain) : null,
-    })),
-    ...competitors.map((c) => ({
-      id: c.id,
-      name: c.name,
-      kind: "COMPETITOR" as EntityKind,
-      domain: c.domain ? normalizeDomain(c.domain) : null,
-    })),
-  ];
+  const entities: EntityRef[] = readRunSnapshot(run.configSnapshot).entities.map((entity) => ({
+    id: entity.id, name: entity.name, kind: entity.kind,
+    domain: entity.domain ? normalizeDomain(entity.domain) : null,
+  }));
 
   const scoredSampleIds = new Set(scores.map((s) => s.sampleId));
 
   const [brandMentions, competitorMentions, citations] = await Promise.all([
-    prisma.brandMention.findMany({
+    db.brandMention.findMany({
       where: { runId, extractionVersion },
       select: { sampleId: true, brandId: true, orderRank: true },
     }),
-    prisma.competitorMention.findMany({
+    db.competitorMention.findMany({
       where: { runId, extractionVersion },
       select: { sampleId: true, competitorId: true, orderRank: true },
     }),
-    prisma.citation.findMany({
+    db.citation.findMany({
       where: { runId, extractionVersion },
       select: { sampleId: true, domain: true },
     }),
@@ -551,22 +548,22 @@ export async function aggregateRun(runId: string, scoringVersion: string): Promi
   // Postgres treats NULLs as distinct, so run-grain rows would accumulate
   // duplicates instead of being matched. The swap is transactional, so a reader
   // never observes a run without its shares.
-  await prisma.$transaction(
-    async (tx) => {
-      await tx.voiceShare.deleteMany({ where: { runId, scoringVersion } });
-      if (shareRows.length > 0) await tx.voiceShare.createMany({ data: shareRows });
-    },
-    { timeout: 30_000, maxWait: 10_000 }
-  );
+  await db.voiceShare.deleteMany({ where: { runId, scoringVersion } });
+  if (shareRows.length > 0) await db.voiceShare.createMany({ data: shareRows });
 
   const counts = tally(statusRows);
-  const status = runStatusFrom(run.status, counts);
+  const missingAnalysis = Math.max(0, counts.succeeded - scores.length);
+  const status = runStatusFrom(run.status, { ...counts, succeeded: scores.length, failed: counts.failed + missingAnalysis });
 
   if (status) {
-    await prisma.run.updateMany({
+    await db.run.updateMany({
       where: { id: runId, status: { in: ["PENDING", "RUNNING", "CANCELLING"] } },
       data: { status, completedAt: new Date() },
     });
+  }
+
+  if (status && missingAnalysis === 0 && (promoteVersion || scoringVersion !== run.scoringVersion)) {
+    await tryPromoteScoringVersion(db, run.projectId, scoringVersion);
   }
 
   logger.info("run aggregated", {
@@ -578,4 +575,26 @@ export async function aggregateRun(runId: string, scoringVersion: string): Promi
     n: scores.length,
     shares: shareRows.length,
   });
+}
+
+/** All mutations and job completion share one lease-fenced transaction. */
+export async function aggregateTask(taskId: string, scoringVersion: string, lease?: JobLease, promoteVersion = false): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    if (lease) await assertLease(tx, lease);
+    await aggregateTaskData(tx, taskId, scoringVersion, lease, promoteVersion);
+    if (lease) { await assertLease(tx, lease); await complete(lease, tx); }
+  }, { timeout: 30_000, maxWait: 10_000 });
+}
+
+export async function aggregateRun(runId: string, scoringVersion: string, lease?: JobLease, promoteVersion = false): Promise<void> {
+  if (lease && lease.runId !== runId) throw new Error("Aggregate run does not match the lease");
+  // Owner metadata only before locking; mutable run/score state is read inside.
+  const owner = await prisma.run.findUnique({ where: { id: runId }, select: { project: { select: { userId: true } } } });
+  await prisma.$transaction(async (tx) => {
+    // Same owner -> run -> job order as planning, avoiding promotion deadlocks.
+    if (owner) await lockRunOwner(tx, owner.project.userId);
+    if (lease) await assertLease(tx, lease);
+    await aggregateRunData(tx, runId, scoringVersion, promoteVersion);
+    if (lease) { await assertLease(tx, lease); await complete(lease, tx); }
+  }, { timeout: 30_000, maxWait: 10_000 });
 }

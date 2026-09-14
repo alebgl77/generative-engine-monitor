@@ -27,11 +27,15 @@ const mocks = vi.hoisted(() => {
       $transaction: vi.fn(),
     },
     enqueue: vi.fn(),
+    assertLease: vi.fn(), complete: vi.fn(), lockRunOwner: vi.fn(),
+    promote: vi.fn(),
   };
 });
 
 vi.mock("@/lib/prisma", () => ({ prisma: mocks.prisma }));
-vi.mock("@/lib/queue/client", () => ({ enqueue: mocks.enqueue }));
+vi.mock("@/lib/queue/client", () => ({ enqueue: mocks.enqueue, assertLease: mocks.assertLease, complete: mocks.complete }));
+vi.mock("@/lib/runs/limits", () => ({ lockRunOwner: mocks.lockRunOwner }));
+vi.mock("@/lib/scoring/rescore", () => ({ tryPromoteScoringVersion: mocks.promote }));
 
 import { aggregateRun, aggregateTask } from "@/lib/scoring/aggregate";
 import { seedFor } from "@/lib/scoring/stats";
@@ -68,12 +72,16 @@ beforeEach(() => {
   vi.clearAllMocks();
 
   mocks.prisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
-    fn(mocks.tx)
+    fn({ ...mocks.prisma, ...mocks.tx, run: { ...mocks.prisma.run, ...mocks.tx.run }, runTask: { ...mocks.prisma.runTask, ...mocks.tx.runTask } })
   );
   mocks.tx.runTask.updateMany.mockResolvedValue({ count: 1 });
   mocks.tx.run.update.mockResolvedValue({ pendingTasks: 2, projectId: "p1" });
   mocks.tx.voiceShare.deleteMany.mockResolvedValue({ count: 0 });
   mocks.tx.voiceShare.createMany.mockResolvedValue({ count: 0 });
+  mocks.assertLease.mockResolvedValue(undefined);
+  mocks.complete.mockResolvedValue(undefined);
+  mocks.lockRunOwner.mockResolvedValue(undefined);
+  mocks.promote.mockResolvedValue(true);
 
   mocks.prisma.runTask.findUnique.mockResolvedValue({
     id: "t1",
@@ -82,14 +90,19 @@ beforeEach(() => {
     mode: "PARAMETRIC",
   });
   mocks.prisma.runTask.findMany.mockResolvedValue([
-    { id: "t1", mode: "PARAMETRIC" },
-    { id: "t2", mode: "GROUNDED" },
+    { id: "t1", mode: "PARAMETRIC", queryId: "q1", providerId: "p1" },
+    { id: "t2", mode: "GROUNDED", queryId: "q1", providerId: "p1" },
   ]);
   mocks.prisma.sampleScore.findMany.mockResolvedValue(sampleScores([40, 55, 70]));
   mocks.prisma.runSample.groupBy.mockResolvedValue(statusRows({ COMPLETED: 3 }));
   mocks.prisma.taskScore.upsert.mockResolvedValue({});
 
-  mocks.prisma.run.findUnique.mockResolvedValue({ id: "r1", projectId: "p1", status: "RUNNING" });
+  mocks.prisma.run.findUnique.mockResolvedValue({ id: "r1", projectId: "p1", status: "RUNNING", scoringVersion: VERSION,
+    project: { userId: "u1" }, configSnapshot: { version: 1, entities: [
+      { id: "b1", name: "Acme", domain: "acme.fr", kind: "BRAND", aliases: [] },
+      { id: "c1", name: "Rivale", domain: "rivale.fr", kind: "COMPETITOR", aliases: [] },
+    ] },
+  });
   mocks.prisma.run.updateMany.mockResolvedValue({ count: 1 });
   mocks.prisma.runScore.upsert.mockResolvedValue({});
   mocks.prisma.brand.findMany.mockResolvedValue([{ id: "b1", name: "Acme", domain: "acme.fr" }]);
@@ -119,7 +132,7 @@ describe("aggregateTask", () => {
 
     expect(updatedStatus(mocks.tx.runTask.updateMany.mock.calls[0])).toBe("PARTIAL");
     const row = created(mocks.prisma.taskScore.upsert.mock.calls[0]);
-    expect(row.n).toBe(2);
+    expect(row.n).toBe(1);
     expect(row.nFailed).toBe(1);
   });
 
@@ -197,7 +210,7 @@ describe("aggregateTask", () => {
       providerCode: "internal",
       payload: { runId: "r1", scoringVersion: VERSION },
     });
-    expect(tx).toBe(mocks.tx);
+    expect(tx.runTask.updateMany).toBe(mocks.tx.runTask.updateMany);
   });
 
   it("counts a task down only once, whatever the number of aggregations", async () => {
@@ -215,7 +228,7 @@ describe("aggregateTask", () => {
     await aggregateTask("t1", VERSION);
 
     expect(mocks.prisma.taskScore.upsert).not.toHaveBeenCalled();
-    expect(mocks.prisma.$transaction).not.toHaveBeenCalled();
+    expect(mocks.prisma.$transaction).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -234,7 +247,9 @@ describe("aggregateRun", () => {
     const rows = mocks.prisma.runScore.upsert.mock.calls.map(created);
     expect(rows.map((row) => row.mode).sort()).toEqual(["GROUNDED", "PARAMETRIC"]);
     for (const row of rows) {
-      expect(row.n).toBe(2);
+      expect(row.n).toBe(1);
+      expect(row.rawN).toBe(2);
+      expect(row.ciLow).toBeNull();
       expect(row.runId).toBe("r1");
     }
     const parametric = rows.find((row) => row.mode === "PARAMETRIC");
@@ -279,6 +294,7 @@ describe("aggregateRun", () => {
 
   it("closes a run the user cancelled as CANCELLED, whatever the samples did", async () => {
     mocks.prisma.run.findUnique.mockResolvedValue({
+      ...(await mocks.prisma.run.findUnique()),
       id: "r1",
       projectId: "p1",
       status: "CANCELLING",
@@ -338,5 +354,58 @@ describe("aggregateRun", () => {
 
     expect(mocks.prisma.runScore.upsert).not.toHaveBeenCalled();
     expect(mocks.prisma.run.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("aggregate ownership and coverage", () => {
+  const lease = { id: "job1", lockedBy: "worker1", leaseVersion: 2, runId: "r1" };
+
+  it("refuses every task write when ownership is already stale", async () => {
+    mocks.assertLease.mockRejectedValueOnce(new Error("stale lease"));
+    await expect(aggregateTask("t1", VERSION, lease)).rejects.toThrow(/stale/);
+    expect(mocks.prisma.taskScore.upsert).not.toHaveBeenCalled();
+    expect(mocks.complete).not.toHaveBeenCalled();
+  });
+
+  it("locks owner before run/job and completes in the same transaction", async () => {
+    await aggregateRun("r1", VERSION, lease);
+    expect(mocks.lockRunOwner.mock.invocationCallOrder[0]).toBeLessThan(mocks.assertLease.mock.invocationCallOrder[0]);
+    expect(mocks.assertLease).toHaveBeenCalledTimes(2);
+    expect(mocks.complete).toHaveBeenCalledTimes(1);
+    expect(mocks.complete.mock.calls[0][1]).toBe(mocks.assertLease.mock.calls[0][0]);
+    expect(mocks.prisma.runScore.upsert.mock.invocationCallOrder[0]).toBeLessThan(mocks.complete.mock.invocationCallOrder[0]);
+  });
+
+  it("does not label a successful response with missing analysis COMPLETED", async () => {
+    mocks.prisma.sampleScore.findMany.mockResolvedValue(sampleScores([40, 55]));
+    mocks.prisma.runSample.groupBy.mockResolvedValue(statusRows({ COMPLETED: 3 }));
+    await aggregateTask("t1", VERSION);
+    expect(updatedStatus(mocks.tx.runTask.updateMany.mock.calls[0])).toBe("PARTIAL");
+    await aggregateRun("r1", VERSION);
+    expect(updatedStatus(mocks.prisma.run.updateMany.mock.calls[0])).toBe("PARTIAL");
+  });
+
+  it("keeps a one-query task descriptive with unavailable interval", async () => {
+    await aggregateTask("t1", VERSION);
+    expect(created(mocks.prisma.taskScore.upsert.mock.calls[0])).toMatchObject({
+      n: 1, rawN: 3, ciLow: null, ciHigh: null, lowN: true, ciMethod: "query-cluster-v1",
+    });
+  });
+
+  it("rebuilds both legacy grains and promotes an explicitly requested original version before completing", async () => {
+    mocks.prisma.run.findUnique.mockResolvedValue({ ...(await mocks.prisma.run.findUnique()), status: "COMPLETED" });
+    await aggregateRun("r1", VERSION, lease, true);
+    expect(created(mocks.prisma.taskScore.upsert.mock.calls[0])).toMatchObject({ rawN: 3, ciMethod: "query-cluster-v1" });
+    expect(created(mocks.prisma.runScore.upsert.mock.calls[0])).toMatchObject({ rawN: 3, ciMethod: "query-cluster-v1" });
+    expect(mocks.promote).toHaveBeenCalledWith(mocks.complete.mock.calls[0][1], "p1", VERSION);
+    expect(mocks.promote.mock.invocationCallOrder[0]).toBeLessThan(mocks.complete.mock.invocationCallOrder[0]);
+  });
+
+  it("does not request promotion from ordinary live aggregation", async () => {
+    await aggregateRun("r1", VERSION, lease);
+    expect(mocks.promote).not.toHaveBeenCalled();
+    mocks.tx.run.update.mockResolvedValue({ pendingTasks: 0, projectId: "p1" });
+    await aggregateTask("t1", VERSION, lease);
+    expect(mocks.enqueue.mock.calls[0][0][0].payload).not.toHaveProperty("promoteVersion");
   });
 });

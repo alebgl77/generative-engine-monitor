@@ -38,7 +38,7 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
   const { projectId } = await params;
   return withProject(request, projectId, async ({ project }) => {
     const brands = await prisma.brand.findMany({
-      where: { projectId: project.id },
+      where: { projectId: project.id, archivedAt: null },
       orderBy: { createdAt: "asc" },
     });
     return json(brands);

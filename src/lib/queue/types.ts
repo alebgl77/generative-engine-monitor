@@ -25,17 +25,20 @@ export interface RunSamplePayload {
   locale: { country: string; language: string };
   scoringVersion: string;
   extractionVersion: string;
+  model?: string;
 }
 
 export interface AggregateTaskPayload {
   taskId: string;
   runId: string;
   scoringVersion: string;
+  promoteVersion?: boolean;
 }
 
 export interface AggregateRunPayload {
   runId: string;
   scoringVersion: string;
+  promoteVersion?: boolean;
 }
 
 export interface RescoreSamplePayload {
@@ -53,7 +56,14 @@ export type JobPayload =
   | AggregateRunPayload
   | RescoreSamplePayload;
 
-export interface ClaimedJob {
+export interface JobLease {
+  id: string;
+  lockedBy: string;
+  leaseVersion: number;
+  runId: string | null;
+}
+
+export interface ClaimedJob extends JobLease {
   id: string;
   kind: JobKind;
   runId: string | null;

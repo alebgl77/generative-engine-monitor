@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   format: "csv" as "csv" | "json",
-  project: { id: "proj-1", name: "Café Crème / Bêta", userId: "user-1" },
+  project: { id: "proj-1", name: "Café Crème / Bêta", userId: "user-1", activeScoringVersion: "v2" },
   run: {
     id: "run-1",
     scoringVersion: "v2",
@@ -69,6 +69,7 @@ interface TaskFixture {
 
 function task(fixture: TaskFixture) {
   return {
+    queryTextSnapshot: fixture.queryText,
     query: { text: fixture.queryText },
     provider: { code: fixture.providerCode, label: fixture.providerLabel },
     mode: fixture.mode,
@@ -82,6 +83,8 @@ function task(fixture: TaskFixture) {
               ciHigh: 70,
               stability: 0.842,
               n: 3,
+              rawN: 3,
+              ciMethod: "legacy-pooled-bootstrap",
               lowN: false,
               brandPresenceRate: 0.667,
               ...fixture.score,
@@ -169,9 +172,12 @@ describe("CSV export escaping", () => {
     expect(fields[2]).toBe("groundé");
     expect(fields[3]).toBe("62.50");
     expect(fields[7]).toBe("3");
-    expect(fields[8]).toBe("non");
-    expect(fields[10]).toBe("HubSpot (50.0 %)");
-    expect(fields[11]).toBe("https://www.g2.com/categories/crm");
+    expect(fields[8]).toBe("3");
+    expect(fields[9]).toBe("legacy-pooled-bootstrap");
+    expect(fields[10]).toBe("samples");
+    expect(fields[11]).toBe("non");
+    expect(fields[13]).toBe("HubSpot (50.0 %)");
+    expect(fields[14]).toBe("https://www.g2.com/categories/crm");
   });
 
   it("neutralises every character a spreadsheet would read as a formula", async () => {
@@ -193,7 +199,7 @@ describe("CSV export escaping", () => {
     rows.slice(1).forEach((row, index) => {
       const fields = fieldsOf(row);
       const raw = dangerous[index];
-      for (const position of [0, 1, 10, 11]) {
+      for (const position of [0, 1, 13, 14]) {
         const field = fields[position];
         expect(field.startsWith("'")).toBe(true);
         expect(field.slice(1).startsWith(raw)).toBe(true);
@@ -234,7 +240,7 @@ describe("CSV export escaping", () => {
     expect(body).toContain('"crm ""open source"", tarifs\nannuels"');
     // The embedded newline stays inside its quoted field and does not open a record.
     expect(rows).toHaveLength(2);
-    expect(fields).toHaveLength(12);
+    expect(fields).toHaveLength(15);
     expect(fields[0]).toBe('crm "open source", tarifs\nannuels');
     expect(fields[1]).toBe("OpenAI, Inc.");
   });
@@ -243,7 +249,7 @@ describe("CSV export escaping", () => {
     const [header] = await csvRows();
 
     expect(header.startsWith('"Requête","Moteur","Mode"')).toBe(true);
-    expect(fieldsOf(header)).toHaveLength(12);
+    expect(fieldsOf(header)).toHaveLength(15);
   });
 
   it("renders a task without score as empty cells rather than nulls", async () => {
@@ -264,8 +270,9 @@ describe("CSV export escaping", () => {
     expect(fields[5]).toBe("");
     expect(fields[6]).toBe("");
     expect(fields[7]).toBe("0");
-    expect(fields[8]).toBe("oui");
-    expect(fields[9]).toBe("");
+    expect(fields[8]).toBe("0");
+    expect(fields[11]).toBe("oui");
+    expect(fields[12]).toBe("");
     expect(fields.join("")).not.toContain("null");
   });
 
@@ -279,5 +286,14 @@ describe("CSV export escaping", () => {
     expect(mocks.recordAudit).toHaveBeenCalledWith(
       expect.objectContaining({ action: "export.download", targetId: "run-1" })
     );
+  });
+
+  it("does not display a legacy empty-population row as a measured zero", async () => {
+    mocks.tasks = [task({ queryText: "unanswered", providerCode: "mock", providerLabel: "Mock", mode: "PARAMETRIC",
+      score: { n: 0, rawN: 0, median: 0, ciLow: 0, ciHigh: 0, stability: 0 } })];
+    const fields = fieldsOf((await csvRows())[1]);
+    expect(fields.slice(3, 7)).toEqual(["", "", "", ""]);
+    expect(fields[7]).toBe("0");
+    expect(fields[9]).toBe("unavailable");
   });
 });

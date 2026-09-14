@@ -1,7 +1,8 @@
 import type { JobStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { SQL_NOW, enqueue } from "@/lib/queue/client";
-import { INTERNAL_PROVIDER_CODE, LEASE, RETRY } from "@/lib/queue/types";
+import { SQL_NOW } from "@/lib/queue/client";
+import { finalizeSample } from "@/lib/runs/finalize";
+import { LEASE, RETRY } from "@/lib/queue/types";
 
 /**
  * Recovery pass, run periodically by every worker.
@@ -96,87 +97,35 @@ export async function sweepExpiredLeases(): Promise<{ requeued: number; dead: nu
  * and its sample being written, which are not always the same transaction.
  */
 export async function reconcileOrphanSamples(): Promise<number> {
-  const rows = await prisma.$queryRaw<OrphanReconciliation[]>`
-    WITH orphan AS (
-      UPDATE run_samples s
-         SET status = 'FAILED'::"SampleStatus",
-             error_code = ${ORPHAN_ERROR_CODE},
-             error_message = ${ORPHAN_ERROR_MESSAGE},
-             completed_at = ${SQL_NOW}
-       WHERE s.status = 'RUNNING'::"SampleStatus"
-         AND COALESCE(s.started_at, s.created_at)
-             < ${SQL_NOW} - make_interval(secs => ${LEASE.durationSec}::double precision)
-         AND NOT EXISTS (
-           SELECT 1 FROM jobs j
-            WHERE j.sample_id = s.id
-              AND j.status IN ('QUEUED'::"JobStatus", 'RUNNING'::"JobStatus")
-         )
-      RETURNING s.task_id AS task_id
-    ),
-    per_task AS (
-      SELECT task_id, count(*)::int AS n FROM orphan GROUP BY task_id
-    )
-    UPDATE run_tasks t
-       SET pending_samples = GREATEST(t.pending_samples - p.n, 0),
-           failed_samples = t.failed_samples + p.n
-      FROM per_task p
-     WHERE t.id = p.task_id
-    RETURNING p.n AS n,
-              t.id AS task_id,
-              t.run_id AS run_id,
-              t.project_id AS project_id,
-              t.pending_samples AS pending_samples`;
-
-  // RETURNING yields post-update values, so a task whose last outstanding sample
-  // was the orphaned one comes back at zero. Nothing else would ever schedule
-  // its aggregation, and the run would stay RUNNING for good.
-  const drained = rows.filter((row) => row.pending_samples === 0);
-  if (drained.length > 0) {
-    await scheduleAggregationFor(drained);
+  const candidates = await prisma.$queryRaw<{
+    id: string; task_id: string; run_id: string; project_id: string; scoring_version: string;
+  }[]>`
+    SELECT s.id, s.task_id, s.run_id, s.project_id, r.scoring_version
+    FROM run_samples s JOIN runs r ON r.id = s.run_id
+    WHERE s.status IN ('PENDING'::"SampleStatus", 'RUNNING'::"SampleStatus")
+      AND r.cancel_requested_at IS NULL
+      AND COALESCE(s.started_at, s.created_at) < ${SQL_NOW} - make_interval(secs => ${LEASE.durationSec}::double precision)
+      AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.sample_id = s.id AND j.status IN ('QUEUED'::"JobStatus", 'RUNNING'::"JobStatus"))
+    ORDER BY s.run_id, s.id LIMIT 100`;
+  let repaired = 0;
+  for (const sample of candidates) {
+    repaired += await prisma.$transaction(async (tx) => {
+      // Recovery uses the same run -> job -> sample lock order as workers.
+      const runs = await tx.$queryRaw<{ cancel_requested_at: Date | null }[]>`
+        SELECT cancel_requested_at FROM runs WHERE id = ${sample.run_id} FOR UPDATE`;
+      if (!runs.length || runs[0].cancel_requested_at) return 0;
+      const jobs = await tx.$queryRaw<{ status: JobStatus }[]>`
+        SELECT status FROM jobs WHERE sample_id = ${sample.id} FOR UPDATE`;
+      if (jobs.some((job) => job.status === "QUEUED" || job.status === "RUNNING")) return 0;
+      const changed = await finalizeSample(tx, {
+        sampleId: sample.id, taskId: sample.task_id, runId: sample.run_id, projectId: sample.project_id,
+        scoringVersion: sample.scoring_version, succeeded: false,
+        errorCode: ORPHAN_ERROR_CODE, errorMessage: ORPHAN_ERROR_MESSAGE,
+      });
+      return changed ? 1 : 0;
+    });
   }
-
-  return rows.reduce((total, row) => total + row.n, 0);
-}
-
-interface OrphanReconciliation {
-  n: number;
-  task_id: string;
-  run_id: string;
-  project_id: string;
-  pending_samples: number;
-}
-
-/**
- * The sweeper has no job payload to read a scoring version from, so it takes the
- * one the run was planned with — the same value every handler of that run uses.
- */
-async function scheduleAggregationFor(tasks: OrphanReconciliation[]): Promise<void> {
-  const runIds = Array.from(new Set(tasks.map((t) => t.run_id)));
-  const runs = await prisma.run.findMany({
-    where: { id: { in: runIds } },
-    select: { id: true, scoringVersion: true },
-  });
-  const versionOf = new Map(runs.map((r) => [r.id, r.scoringVersion]));
-
-  const jobs = tasks
-    .map((task) => {
-      const scoringVersion = versionOf.get(task.run_id);
-      if (!scoringVersion) return null;
-      return {
-        kind: "AGGREGATE_TASK" as const,
-        runId: task.run_id,
-        projectId: task.project_id,
-        taskId: task.task_id,
-        providerCode: INTERNAL_PROVIDER_CODE,
-        priority: 10,
-        payload: { taskId: task.task_id, runId: task.run_id, scoringVersion },
-      };
-    })
-    .filter((job): job is NonNullable<typeof job> => job !== null);
-
-  if (jobs.length > 0) {
-    await enqueue(jobs);
-  }
+  return repaired;
 }
 
 /**
@@ -185,30 +134,35 @@ async function scheduleAggregationFor(tasks: OrphanReconciliation[]): Promise<vo
  * cancel would otherwise be executed, and the run would never reach CANCELLED.
  */
 export async function finalizeStuckCancellations(): Promise<number> {
-  await prisma.$executeRaw`
-    UPDATE jobs j
-       SET status = 'CANCELLED'::"JobStatus",
-           completed_at = ${SQL_NOW},
-           locked_by = NULL,
-           lease_expires_at = NULL,
-           updated_at = ${SQL_NOW}
-     WHERE j.status = 'QUEUED'::"JobStatus"
-       AND EXISTS (
-         SELECT 1 FROM runs r
-          WHERE r.id = j.run_id
-            AND r.status = 'CANCELLING'::"RunStatus"
-       )`;
-
-  return prisma.$executeRaw`
-    UPDATE runs r
-       SET status = 'CANCELLED'::"RunStatus",
-           completed_at = ${SQL_NOW}
-     WHERE r.status = 'CANCELLING'::"RunStatus"
-       AND NOT EXISTS (
-         SELECT 1 FROM jobs j
-          WHERE j.run_id = r.id
-            AND j.status IN ('QUEUED'::"JobStatus", 'RUNNING'::"JobStatus")
-       )`;
+  const candidates = await prisma.run.findMany({ where: { status: "CANCELLING" }, select: { id: true }, take: 100 });
+  let closed = 0;
+  for (const run of candidates) closed += await prisma.$transaction(async (tx) => {
+    const locked = await tx.$queryRaw<{ status: string }[]>`SELECT status FROM runs WHERE id = ${run.id} FOR UPDATE`;
+    if (locked[0]?.status !== "CANCELLING") return 0;
+    await tx.job.updateMany({ where: { runId: run.id, status: "QUEUED" }, data: {
+      status: "CANCELLED", completedAt: new Date(), lockedBy: null, leaseExpiresAt: null,
+    } });
+    if (await tx.job.count({ where: { runId: run.id, status: "RUNNING" } })) return 0;
+    await tx.runSample.updateMany({ where: { runId: run.id, status: { in: ["PENDING", "RUNNING"] } }, data: {
+      status: "CANCELLED", completedAt: new Date(),
+    } });
+    await tx.$executeRaw`
+      UPDATE run_tasks t SET pending_samples = 0,
+        done_samples = (SELECT count(*)::int FROM run_samples s WHERE s.task_id = t.id AND s.status = 'COMPLETED'),
+        failed_samples = (SELECT count(*)::int FROM run_samples s WHERE s.task_id = t.id AND s.status = 'FAILED'),
+        status = CASE WHEN t.status IN ('PENDING','RUNNING') THEN 'CANCELLED'::"TaskStatus" ELSE t.status END,
+        completed_at = COALESCE(t.completed_at, ${SQL_NOW})
+      WHERE t.run_id = ${run.id}`;
+    const [doneSamples, failedSamples] = await Promise.all([
+      tx.runSample.count({ where: { runId: run.id, status: "COMPLETED" } }),
+      tx.runSample.count({ where: { runId: run.id, status: "FAILED" } }),
+    ]);
+    await tx.run.update({ where: { id: run.id }, data: {
+      status: "CANCELLED", completedAt: new Date(), pendingTasks: 0, doneSamples, failedSamples,
+    } });
+    return 1;
+  });
+  return closed;
 }
 
 /**

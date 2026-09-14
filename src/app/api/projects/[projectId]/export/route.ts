@@ -7,6 +7,7 @@ import { parseQuery, withProject } from "@/lib/api/route-helpers";
 import { AUDIT_ACTIONS, recordAudit } from "@/lib/audit";
 import { badRequest } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import { runForReading, analysisCoverage } from "@/lib/scoring/read-model";
 
 type RouteContext = { params: Promise<{ projectId: string }> };
 
@@ -24,6 +25,9 @@ interface ExportRow {
   ciHigh: number | null;
   stability: number | null;
   n: number;
+  rawN: number;
+  ciMethod: string;
+  nUnit: string;
   lowN: boolean;
   brandPresenceRate: number | null;
   competitors: { name: string; mentionShare: number }[];
@@ -39,6 +43,9 @@ const CSV_HEADERS = [
   "IC haut",
   "Stabilité",
   "N",
+  "N brut",
+  "Méthode intervalle",
+  "Unité N",
   "N faible",
   "Taux de présence marque",
   "Concurrents",
@@ -81,11 +88,13 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
 
     // Partial and cancelled runs are exportable: they hold fewer measurements
     // than planned, and each row carries its own `n` and `lowN` to say so.
-    const run = await prisma.run.findFirst({
+    const originalRun = await prisma.run.findFirst({
       where: { projectId: project.id, status: { in: ["COMPLETED", "PARTIAL", "CANCELLED"] } },
       orderBy: { createdAt: "desc" },
     });
-    if (!run) throw badRequest("Aucune analyse exploitable à exporter.");
+    if (!originalRun) throw badRequest("Aucune analyse exploitable à exporter.");
+
+    const run = await runForReading(originalRun, project.activeScoringVersion);
 
     const tasks = await prisma.runTask.findMany({
       where: { runId: run.id },
@@ -113,13 +122,13 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
     });
 
     const rows: ExportRow[] = tasks.map((task) => {
-      const score = task.scores[0];
+      const score = task.scores[0]?.n > 0 ? task.scores[0] : undefined;
       const citations = new Set<string>();
       for (const sample of task.samples) {
         for (const citation of sample.citations) citations.add(citation.url);
       }
       return {
-        query: task.query.text,
+        query: task.queryTextSnapshot,
         providerCode: task.provider.code,
         providerLabel: task.provider.label,
         mode: task.mode,
@@ -128,6 +137,8 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
         ciHigh: score?.ciHigh ?? null,
         stability: score?.stability ?? null,
         n: score?.n ?? 0,
+        rawN: score?.rawN ?? 0, ciMethod: score?.ciMethod ?? "unavailable",
+        nUnit: score?.ciMethod === "query-cluster-v1" ? "queries" : "samples",
         lowN: score?.lowN ?? true,
         brandPresenceRate: score?.brandPresenceRate ?? null,
         competitors: task.shares
@@ -156,6 +167,8 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
           project: { id: project.id, name: project.name },
           runId: run.id,
           scoringVersion: run.scoringVersion,
+          extractionVersion: run.extractionVersion,
+          coverage: await analysisCoverage(run),
           exportedAt: new Date().toISOString(),
           rows,
         },
@@ -175,6 +188,7 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
           csvCell(formatNumber(row.ciHigh, 2)),
           csvCell(formatNumber(row.stability, 3)),
           csvCell(row.n),
+          csvCell(row.rawN), csvCell(row.ciMethod), csvCell(row.nUnit),
           csvCell(row.lowN ? "oui" : "non"),
           csvCell(formatNumber(row.brandPresenceRate, 3)),
           csvCell(

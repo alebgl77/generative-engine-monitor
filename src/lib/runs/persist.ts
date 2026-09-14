@@ -2,9 +2,12 @@ import type { Prisma, SamplingMode } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getExtractor } from "@/lib/parsing/registry";
 import { getScoringVersion } from "@/lib/scoring/registry";
-import type { EntityToMatch, MentionOccurrence } from "@/lib/parsing/types";
+import type { EntityToMatch, MentionOccurrence, ExtractionResult } from "@/lib/parsing/types";
 import type { CitationSourceKind } from "@/lib/providers/types";
-import { JUDGE_VERSION, judgeSentiment } from "@/lib/sentiment/judge";
+import { JUDGE_VERSION, judgeSentiment, sentimentKey } from "@/lib/sentiment/judge";
+import { assertLease, LostLease } from "@/lib/queue/client";
+import type { JobLease } from "@/lib/queue/types";
+import { readRunSnapshot } from "@/lib/runs/snapshots";
 import { logger } from "@/lib/logger";
 
 /**
@@ -33,6 +36,7 @@ export interface PersistInput {
   scoringVersion: string;
   extractionVersion: string;
   signal?: AbortSignal;
+  lease?: JobLease;
 }
 
 export interface PersistResult {
@@ -43,39 +47,31 @@ export interface PersistResult {
 }
 
 export async function persistSampleAnalysis(input: PersistInput): Promise<PersistResult> {
-  const [brands, competitors] = await Promise.all([
-    prisma.brand.findMany({ where: { projectId: input.projectId } }),
-    prisma.competitor.findMany({ where: { projectId: input.projectId } }),
-  ]);
+  const existing = await prisma.$transaction(async (tx) => {
+    if (input.lease) await assertLease(tx, input.lease);
+    return tx.sampleScore.findUnique({ where: {
+      sampleId_scoringVersion: { sampleId: input.sampleId, scoringVersion: input.scoringVersion },
+    } });
+  });
+  if (existing) return {
+    score: existing.score, brandPresent: existing.brandPresent,
+    mentionCount: existing.brandOccurrences + existing.competitorCount, citationCount: existing.citationCount,
+  };
+  const run = await prisma.run.findUniqueOrThrow({ where: { id: input.runId }, select: { configSnapshot: true } });
+  const entities: EntityToMatch[] = readRunSnapshot(run.configSnapshot).entities;
+  const brands = entities.filter((entity) => entity.kind === "BRAND");
+  const brandIds = brands.map((brand) => brand.id);
+  const brandDomains = brands.map((brand) => brand.domain).filter((domain): domain is string => Boolean(domain));
 
-  const entities: EntityToMatch[] = [
-    ...brands.map((b) => ({
-      id: b.id,
-      name: b.name,
-      domain: b.domain,
-      aliases: b.aliases,
-      kind: "BRAND" as const,
-    })),
-    ...competitors.map((c) => ({
-      id: c.id,
-      name: c.name,
-      domain: c.domain,
-      aliases: c.aliases,
-      kind: "COMPETITOR" as const,
-    })),
-  ];
-
-  const brandIds = brands.map((b) => b.id);
-  const brandDomains = brands.map((b) => b.domain).filter((d): d is string => Boolean(d));
-
-  const extraction = getExtractor(input.extractionVersion).extract({
+  const stored = await storedEvidence(prisma, input, entities);
+  let extraction = stored ?? getExtractor(input.extractionVersion).extract({
     text: input.text,
     entities,
     providerSources: input.providerSources,
     brandDomains,
   });
 
-  const mentions = await withSentiment(extraction.mentions, input);
+  let mentions = stored ? extraction.mentions : await withSentiment(extraction.mentions, input);
 
   const brandMentionRows = mentions
     .filter((m) => m.kind === "BRAND")
@@ -138,7 +134,7 @@ export async function persistSampleAnalysis(input: PersistInput): Promise<Persis
   }));
 
   const scoring = getScoringVersion(input.scoringVersion);
-  const result = scoring.scoreSample({
+  let result = scoring.scoreSample({
     mode: input.mode,
     brandIds,
     mentions,
@@ -147,23 +143,29 @@ export async function persistSampleAnalysis(input: PersistInput): Promise<Persis
   });
 
   await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-    // Replay re-derives the same rows, so the write must be idempotent rather
-    // than additive. The unique keys carry extractionVersion, which lets a new
-    // extraction version coexist with the old evidence instead of destroying it.
-    await tx.brandMention.deleteMany({
-      where: { sampleId: input.sampleId, extractionVersion: extraction.extractionVersion },
-    });
-    await tx.competitorMention.deleteMany({
-      where: { sampleId: input.sampleId, extractionVersion: extraction.extractionVersion },
-    });
-    await tx.citation.deleteMany({
-      where: { sampleId: input.sampleId, extractionVersion: extraction.extractionVersion },
-    });
-
-    if (brandMentionRows.length) await tx.brandMention.createMany({ data: brandMentionRows });
-    if (competitorMentionRows.length)
-      await tx.competitorMention.createMany({ data: competitorMentionRows });
-    if (citationRows.length) await tx.citation.createMany({ data: citationRows });
+    if (input.lease) await assertLease(tx, input.lease);
+    // Serialize competing target versions for the same immutable response.
+    await tx.$queryRaw`SELECT id FROM run_samples WHERE id = ${input.sampleId} FOR UPDATE`;
+    const existingScore = await tx.sampleScore.findUnique({ where: {
+      sampleId_scoringVersion: { sampleId: input.sampleId, scoringVersion: input.scoringVersion },
+    } });
+    if (existingScore) {
+      result = { ...result, score: existingScore.score, brandPresent: existingScore.brandPresent };
+      return;
+    }
+    const previous = await storedEvidence(tx, input, entities);
+    if (previous) {
+      // Full persisted evidence is authoritative, including legacy rows whose
+      // reconstructed catalog snapshot no longer reproduces their extraction.
+      extraction = previous;
+      mentions = previous.mentions;
+      const preservedBrandIds = [...new Set([...brandIds, ...mentions.filter((mention) => mention.kind === "BRAND").map((mention) => mention.entityId)])];
+      result = scoring.scoreSample({ mode: input.mode, brandIds: preservedBrandIds, mentions, citations: previous.citations, textLength: previous.textLength });
+    }
+    if (!previous && brandMentionRows.length) await tx.brandMention.createMany({ data: brandMentionRows, skipDuplicates: true });
+    if (!previous && competitorMentionRows.length)
+      await tx.competitorMention.createMany({ data: competitorMentionRows, skipDuplicates: true });
+    if (!previous && citationRows.length) await tx.citation.createMany({ data: citationRows, skipDuplicates: true });
 
     const scoreData = {
       taskId: input.taskId,
@@ -191,6 +193,7 @@ export async function persistSampleAnalysis(input: PersistInput): Promise<Persis
       update: scoreData,
       create: { sampleId: input.sampleId, scoringVersion: input.scoringVersion, ...scoreData },
     });
+    if (input.lease) await assertLease(tx, input.lease);
   });
 
   return {
@@ -198,6 +201,37 @@ export async function persistSampleAnalysis(input: PersistInput): Promise<Persis
     brandPresent: result.brandPresent,
     mentionCount: mentions.length,
     citationCount: extraction.citations.length,
+  };
+}
+
+async function storedEvidence(
+  db: Prisma.TransactionClient, input: PersistInput, entities: EntityToMatch[]
+): Promise<ExtractionResult | null> {
+  const where = { sampleId: input.sampleId, extractionVersion: input.extractionVersion };
+  if (!(await db.sampleScore.findFirst({ where, select: { id: true } }))) return null;
+  const [brands, competitors, citations] = await Promise.all([
+    db.brandMention.findMany({ where, orderBy: [{ charOffset: "asc" }, { occurrenceIndex: "asc" }] }),
+    db.competitorMention.findMany({ where, orderBy: [{ charOffset: "asc" }, { occurrenceIndex: "asc" }] }),
+    db.citation.findMany({ where, orderBy: [{ position: "asc" }, { normalizedUrl: "asc" }] }),
+  ]);
+  const rows = [
+    ...brands.map((row) => ({ ...row, entityId: row.brandId, kind: "BRAND" as const })),
+    ...competitors.map((row) => ({ ...row, entityId: row.competitorId, kind: "COMPETITOR" as const })),
+  ];
+  return {
+    extractionVersion: input.extractionVersion, textLength: input.text.length, sentenceCount: 0,
+    mentions: rows.map((row) => ({
+      entityId: row.entityId, entityName: entities.find((entity) => entity.id === row.entityId)?.name ?? row.entityId,
+      kind: row.kind, mentionType: row.mentionType, occurrenceIndex: row.occurrenceIndex,
+      charOffset: row.charOffset, sentenceIndex: row.sentenceIndex, normalizedPosition: row.normalizedPosition,
+      inFirstSentence: row.inFirstSentence, orderRank: row.orderRank, occurrencesTotal: row.occurrencesTotal,
+      context: row.context, confidence: row.confidence,
+      sentiment: row.sentiment ?? undefined, sentimentScore: row.sentimentScore ?? undefined,
+    })).sort((a, b) => a.charOffset - b.charOffset || a.entityId.localeCompare(b.entityId)),
+    citations: citations.map((row) => ({
+      url: row.url, normalizedUrl: row.normalizedUrl, domain: row.domain, title: row.title ?? undefined,
+      position: row.position ?? 0, isBrandDomain: row.isBrandDomain, sourceKind: row.sourceKind,
+    })),
   };
 }
 
@@ -219,16 +253,17 @@ async function withSentiment(
         entityName: m.entityName,
         context: m.context,
       })),
-      { userId: input.userId, signal: input.signal }
+      { userId: input.userId, signal: input.signal, lease: input.lease }
     );
     if (verdicts.size === 0) return mentions;
     return mentions.map((m) => {
-      const verdict = verdicts.get(m.entityId);
+      const verdict = verdicts.get(sentimentKey(m.entityId, m.context));
       return verdict
         ? { ...m, sentiment: verdict.sentiment, sentimentScore: verdict.score }
         : m;
     });
   } catch (err) {
+    if (err instanceof LostLease) throw err;
     logger.warn("sentiment judge unavailable, scoring without it", {
       sampleId: input.sampleId,
       error: err instanceof Error ? err.message : String(err),

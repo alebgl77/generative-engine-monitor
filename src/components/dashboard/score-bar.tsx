@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils";
 
 export type ScoreDistribution = Pick<
   AxisSummary,
-  "median" | "ciLow" | "ciHigh" | "stability" | "n" | "lowN"
+  "median" | "ciLow" | "ciHigh" | "stability" | "n" | "lowN" | "ciMethod" | "nUnit"
 >;
 
 export type StabilityTone = "stable" | "moderate" | "volatile" | "indicative";
@@ -25,13 +25,13 @@ const MODERATE_THRESHOLD = 0.5;
 export const LOW_N_CAVEAT = "échantillon réduit — tendance indicative";
 
 export const STABILITY_HINT =
-  "Accord entre les répétitions d'une même cellule : 100 % signifie que le moteur a répondu de façon identique, une valeur basse que le score dépend du tirage.";
+  "Dispersion des scores résumés. La méthode query-cluster décrit les moyennes par requête, pas la répétabilité d'un moteur. Mesures des API sur le panel observé, pas des interfaces publiques personnalisées.";
 
 export const INTERVAL_HINT =
-  "Intervalle de confiance à 95 % obtenu par bootstrap sur la médiane des répétitions. Deux scores dont les intervalles se recouvrent ne sont pas départageables.";
+  "La méthode indiquée distingue le bootstrap historique par échantillon du bootstrap par requête sur un panel fixe d'API. Moins de deux requêtes : intervalle indisponible. Ce n'est pas un test de différence ni une garantie de représentativité.";
 
 export function stabilityTone(value: ScoreDistribution): StabilityTone {
-  if (value.lowN) return "indicative";
+  if (value.lowN || value.stability === null) return "indicative";
   if (value.stability >= STABLE_THRESHOLD) return "stable";
   if (value.stability >= MODERATE_THRESHOLD) return "moderate";
   return "volatile";
@@ -45,23 +45,23 @@ export const TONE_LABEL: Record<StabilityTone, string> = {
 };
 
 export const TONE_TEXT: Record<StabilityTone, string> = {
-  stable: "text-emerald-600",
-  moderate: "text-amber-600",
-  volatile: "text-red-600",
+  stable: "text-foreground",
+  moderate: "text-muted-foreground",
+  volatile: "text-primary",
   indicative: "text-muted-foreground",
 };
 
 export const TONE_FILL: Record<StabilityTone, string> = {
-  stable: "bg-emerald-500",
-  moderate: "bg-amber-500",
-  volatile: "bg-red-500",
+  stable: "bg-foreground/80",
+  moderate: "bg-foreground/55",
+  volatile: "bg-primary",
   indicative: "bg-muted-foreground",
 };
 
 const TONE_BAND: Record<StabilityTone, string> = {
-  stable: "bg-emerald-500/30",
-  moderate: "bg-amber-500/30",
-  volatile: "bg-red-500/30",
+  stable: "bg-foreground/25",
+  moderate: "bg-foreground/20",
+  volatile: "bg-primary/30",
   indicative: "bg-muted-foreground/25",
 };
 
@@ -77,19 +77,22 @@ function clampPercent(value: number, max: number): number {
 }
 
 export function formatScore(value: ScoreDistribution): string {
+  if (value.median === null || value.n === 0) return "—";
   const rounded = Math.round(value.median);
   return value.lowN ? `≈ ${rounded}` : `${rounded}`;
 }
 
 export function formatInterval(value: ScoreDistribution): string {
+  if (value.ciLow === null || value.ciHigh === null || value.n === 0) return "IC indisponible";
   const low = Math.round(Math.min(value.ciLow, value.ciHigh));
   const high = Math.round(Math.max(value.ciLow, value.ciHigh));
   return value.lowN
-    ? `plage observée : ${low}–${high}`
+    ? `IC indicatif : ${low}–${high}`
     : `IC 95 % : ${low}–${high}`;
 }
 
 export function formatStability(value: ScoreDistribution): string {
+  if (value.stability === null || value.n === 0) return "—";
   return `${Math.round(Math.min(1, Math.max(0, value.stability)) * 100)} %`;
 }
 
@@ -97,7 +100,7 @@ export function describeDistribution(
   value: ScoreDistribution,
   max: number
 ): string {
-  const base = `médiane ${Math.round(value.median)} sur ${max}, ${formatInterval(
+  const base = `médiane ${formatScore(value)} sur ${max}, ${formatInterval(
     value
   )}, stabilité ${formatStability(value)}, n = ${value.n}`;
   return value.lowN ? `${base} — ${LOW_N_CAVEAT}` : base;
@@ -118,9 +121,13 @@ export function ScoreBar({
   size = "md",
   className,
 }: ScoreBarProps) {
+  if (value.median === null || value.n === 0) {
+    return <span className="text-muted-foreground">— · analyse indisponible</span>;
+  }
   const tone = stabilityTone(value);
-  const low = Math.min(value.ciLow, value.ciHigh);
-  const high = Math.max(value.ciLow, value.ciHigh);
+  const hasInterval = value.ciLow !== null && value.ciHigh !== null;
+  const low = hasInterval ? Math.min(value.ciLow!, value.ciHigh!) : 0;
+  const high = hasInterval ? Math.max(value.ciLow!, value.ciHigh!) : 0;
 
   const medianPct = clampPercent(value.median, max);
   const lowPct = clampPercent(low, max);
@@ -160,25 +167,25 @@ export function ScoreBar({
         role="img"
         aria-label={describeDistribution(value, max)}
         className={cn(
-          "relative w-full overflow-hidden rounded-full bg-muted",
+          "relative w-full overflow-hidden rounded-sm bg-muted",
           small ? "h-1.5" : "h-2.5"
         )}
       >
         <div
           className={cn(
-            "absolute inset-y-0 left-0 rounded-full opacity-40",
+            "absolute inset-y-0 left-0 rounded-sm opacity-40",
             TONE_FILL[tone]
           )}
           style={{ width: `${medianPct}%` }}
         />
-        <div
-          className={cn("absolute inset-y-0 rounded-full", TONE_BAND[tone])}
+        {hasInterval && <div
+          className={cn("absolute inset-y-0 rounded-sm", TONE_BAND[tone])}
           style={{
             left: `${lowPct}%`,
             width: `${bandWidth}%`,
             ...(value.lowN ? INDICATIVE_HATCH : null),
           }}
-        />
+        />}
         <div
           className={cn("absolute inset-y-0 w-[2px] rounded", TONE_FILL[tone])}
           style={{ left: `${medianPct}%`, transform: "translateX(-50%)" }}
@@ -189,11 +196,12 @@ export function ScoreBar({
         <span className="truncate">
           Stabilité {formatStability(value)} · {TONE_LABEL[tone]}
         </span>
-        <span className="shrink-0 tabular-nums">n = {value.n}</span>
+        <span className="shrink-0 tabular-nums">n = {value.n} {value.nUnit === "queries" ? "requêtes" : "échantillons"}</span>
       </div>
+      <p className="text-[10px] text-muted-foreground">{value.ciMethod ?? "méthode historique"}</p>
 
       {value.lowN && (
-        <p className="text-[10px] italic leading-tight text-amber-600">
+        <p className="text-[10px] italic leading-tight text-primary">
           {LOW_N_CAVEAT}
         </p>
       )}

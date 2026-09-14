@@ -7,6 +7,8 @@ import { CURRENT_SCORING_VERSION } from "@/lib/scoring/registry";
 import { CURRENT_EXTRACTION_VERSION } from "@/lib/parsing/registry";
 import { badRequest } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { assertRunAllowance, getRunLimits, lockRunOwner, plannedSampleCount } from "@/lib/runs/limits";
+import { REQUEST_TEMPLATE_VERSION, requestHash, type RunConfigSnapshot } from "@/lib/runs/snapshots";
 
 /**
  * Run planning.
@@ -28,10 +30,15 @@ export interface PlanResult {
 }
 
 export async function planRun(projectId: string): Promise<PlanResult> {
-  const project = await prisma.project.findUniqueOrThrow({
+  const owner = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { userId: true } });
+  return prisma.$transaction(async (tx) => {
+  await lockRunOwner(tx, owner.userId);
+  const project = await tx.project.findUniqueOrThrow({
     where: { id: projectId },
     include: {
-      queries: { where: { isActive: true }, orderBy: { createdAt: "asc" } },
+      queries: { where: { isActive: true, archivedAt: null }, orderBy: { createdAt: "asc" } },
+      brands: { where: { archivedAt: null }, orderBy: { id: "asc" } },
+      competitors: { where: { archivedAt: null }, orderBy: { id: "asc" } },
       user: { select: { id: true } },
     },
   });
@@ -40,7 +47,10 @@ export async function planRun(projectId: string): Promise<PlanResult> {
     throw badRequest("Aucune requête active — ajoutez au moins une requête avant de lancer une analyse.");
   }
 
-  const credentials = await prisma.providerCredential.findMany({
+  if (project.queries.length > getRunLimits().MAX_QUERIES_PER_PROJECT) {
+    throw badRequest("Limite de requêtes par projet dépassée");
+  }
+  const credentials = await tx.providerCredential.findMany({
     where: { userId: project.userId, isValid: true },
     include: { provider: true },
   });
@@ -65,7 +75,7 @@ export async function planRun(projectId: string): Promise<PlanResult> {
   }
 
   if (byId.size === 0) {
-    const mock = await prisma.provider.findUnique({ where: { code: MOCK_PROVIDER_CODE } });
+    const mock = await tx.provider.findUnique({ where: { code: MOCK_PROVIDER_CODE } });
     if (mock?.isActiveGlobal) byId.set(mock.id, mock);
   }
 
@@ -75,7 +85,8 @@ export async function planRun(projectId: string): Promise<PlanResult> {
   }
 
   const skipped: PlanResult["skipped"] = [];
-  const cells: { providerId: string; providerCode: string; mode: SamplingMode }[] = [];
+  const cells: { providerId: string; providerCode: string; mode: SamplingMode; model: string }[] = [];
+  const providerSnapshots: RunConfigSnapshot["providers"] = [];
 
   for (const provider of providers) {
     const impl = getProvider(provider.code);
@@ -83,6 +94,9 @@ export async function planRun(projectId: string): Promise<PlanResult> {
       logger.warn("provider row has no implementation", { code: provider.code });
       continue;
     }
+    const model = impl.defaultModel();
+    providerSnapshots.push({ id: provider.id, code: provider.code, model,
+      modes: (["PARAMETRIC", "GROUNDED"] as SamplingMode[]).filter((mode) => supportsMode(impl, mode)) });
     for (const mode of project.samplingModes) {
       if (!supportsMode(impl, mode)) {
         // Not an error: Perplexity is search-native and has no parametric mode.
@@ -93,7 +107,7 @@ export async function planRun(projectId: string): Promise<PlanResult> {
         });
         continue;
       }
-      cells.push({ providerId: provider.id, providerCode: provider.code, mode });
+      cells.push({ providerId: provider.id, providerCode: provider.code, mode, model });
     }
   }
 
@@ -105,9 +119,17 @@ export async function planRun(projectId: string): Promise<PlanResult> {
 
   const repetitions = project.repetitions;
   const totalTasks = cells.length * project.queries.length;
-  const totalSamples = totalTasks * repetitions;
-
-  const runId = await prisma.$transaction(async (tx) => {
+  const totalSamples = plannedSampleCount(project.queries.length, cells.length, repetitions);
+  await assertRunAllowance(tx, owner.userId, totalSamples, { launchingRun: true });
+  const locale = { country: project.targetCountry, language: project.targetLanguage };
+  const snapshot: RunConfigSnapshot = {
+    version: 1, reconstructed: false, locale, providers: providerSnapshots,
+    requestTemplateVersion: REQUEST_TEMPLATE_VERSION,
+    entities: [
+      ...project.brands.map((entity) => ({ id: entity.id, name: entity.name, aliases: entity.aliases, domain: entity.domain, kind: "BRAND" as const })),
+      ...project.competitors.map((entity) => ({ id: entity.id, name: entity.name, aliases: entity.aliases, domain: entity.domain, kind: "COMPETITOR" as const })),
+    ],
+  };
     const run = await tx.run.create({
       data: {
         projectId: project.id,
@@ -120,6 +142,7 @@ export async function planRun(projectId: string): Promise<PlanResult> {
         pendingTasks: totalTasks,
         totalSamples,
         startedAt: new Date(),
+        configSnapshot: snapshot as unknown as Prisma.InputJsonValue,
       },
     });
 
@@ -136,6 +159,8 @@ export async function planRun(projectId: string): Promise<PlanResult> {
             mode: cell.mode,
             plannedSamples: repetitions,
             pendingSamples: repetitions,
+            queryTextSnapshot: query.text,
+            localeSnapshot: locale,
           },
         });
 
@@ -147,6 +172,7 @@ export async function planRun(projectId: string): Promise<PlanResult> {
                 runId: run.id,
                 projectId: project.id,
                 sampleIndex: index,
+                promptHash: requestHash({ queryText: query.text, locale, providerCode: cell.providerCode, mode: cell.mode, model: cell.model }),
               },
               select: { id: true },
             })
@@ -162,7 +188,8 @@ export async function planRun(projectId: string): Promise<PlanResult> {
             queryText: query.text,
             providerCode: cell.providerCode,
             mode: cell.mode,
-            locale: { country: project.targetCountry, language: project.targetLanguage },
+            locale,
+            model: cell.model,
             scoringVersion: CURRENT_SCORING_VERSION,
             extractionVersion: CURRENT_EXTRACTION_VERSION,
           };
@@ -180,17 +207,14 @@ export async function planRun(projectId: string): Promise<PlanResult> {
     }
 
     await enqueue(jobs, tx as unknown as Prisma.TransactionClient);
-    return run.id;
+    logger.info("run planned", { runId: run.id, totalTasks, totalSamples, skipped: skipped.length });
+    return { runId: run.id, totalTasks, totalSamples, skipped };
   }, {
     // Materialising every sample of a large run is a lot of inserts; the default
     // 5s interactive-transaction budget is not enough.
     timeout: 30_000,
     maxWait: 10_000,
   });
-
-  logger.info("run planned", { runId, totalTasks, totalSamples, skipped: skipped.length });
-
-  return { runId, totalTasks, totalSamples, skipped };
 }
 
 /** Cancellation is cooperative: queued jobs are dropped immediately, running

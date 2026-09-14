@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ProviderError } from "@/lib/errors";
 import { RETRY, type RunSamplePayload } from "@/lib/queue/types";
 
 /**
@@ -56,6 +57,8 @@ function payloadFor(sampleId: string): RunSamplePayload {
 
 /** Creates `count` samples and their jobs, returning the job ids in a stable order. */
 async function queueJobs(count: number): Promise<string[]> {
+  await db.runTask.update({ where: { id: fixture.taskId }, data: { plannedSamples: count, pendingSamples: count } });
+  await db.run.update({ where: { id: fixture.runId }, data: { totalSamples: count } });
   const samples: { id: string }[] = [];
   for (let index = 0; index < count; index++) {
     samples.push(
@@ -99,6 +102,32 @@ function stillValid(): Date {
   return new Date(Date.now() + 5 * MINUTE_MS);
 }
 
+async function leaseFor(id: string) {
+  const row = await db.job.findUniqueOrThrow({ where: { id } });
+  return { id, lockedBy: row.lockedBy ?? "worker-a", leaseVersion: row.leaseVersion, runId: row.runId };
+}
+async function claimOne(workerId = "worker-a") {
+  return (await queue.claim({ workerId, providerCodes: [providerCode], limit: 1 }))[0];
+}
+async function makeImmediatelyClaimable(id: string) {
+  await db.job.update({ where: { id }, data: { availableAt: new Date(0) } });
+}
+async function mockCallJob() {
+  const [id] = await queueJobs(1);
+  const row = await db.job.findUniqueOrThrow({ where: { id } });
+  await db.job.update({ where: { id }, data: { payload: { ...payloadFor(row.sampleId!), providerCode: "mock" } } });
+  const registry = await import("@/lib/providers/registry");
+  const provider = registry.getProvider("mock")!;
+  const call = vi.spyOn(provider, "runQuery").mockResolvedValue({
+    text: "A stored test response.", rawJson: { sources: [] }, sources: [],
+    model: "test-model", truncated: false, usage: { inputTokens: 7, outputTokens: 11 },
+  });
+  const { runSampleHandler } = await import("@/worker/handlers/runSample");
+  const { ensureBucket, bucketKeyForProvider } = await import("@/lib/queue/ratelimit");
+  await ensureBucket(bucketKeyForProvider("mock"), 10000, 10000);
+  return { id, sampleId: row.sampleId!, call, run: runSampleHandler };
+}
+
 describe.skipIf(!DATABASE_CONFIGURED)("queue on PostgreSQL", () => {
   beforeAll(async () => {
     if (!DATABASE_CONFIGURED) return;
@@ -137,6 +166,7 @@ describe.skipIf(!DATABASE_CONFIGURED)("queue on PostgreSQL", () => {
         status: "RUNNING",
         scoringVersion: "v2",
         extractionVersion: "v2",
+        configSnapshot: { version: 1, reconstructed: false, entities: [], providers: [], locale: { country: "FR", language: "fr" }, requestTemplateVersion: "test" },
         repetitions: 3,
         modes: ["PARAMETRIC"],
       },
@@ -172,7 +202,11 @@ describe.skipIf(!DATABASE_CONFIGURED)("queue on PostgreSQL", () => {
     if (!DATABASE_CONFIGURED) return;
 
     await db.job.deleteMany({ where: { providerCode } });
+    vi.restoreAllMocks();
+    await db.job.deleteMany({ where: { runId: fixture.runId } });
     await db.runSample.deleteMany({ where: { taskId: fixture.taskId } });
+    await db.run.update({ where: { id: fixture.runId }, data: { status: "RUNNING", cancelRequestedAt: null, totalTasks: 1, pendingTasks: 1, doneSamples: 0, failedSamples: 0 } });
+    await db.runTask.update({ where: { id: fixture.taskId }, data: { status: "PENDING", doneSamples: 0, failedSamples: 0 } });
   }, TIMEOUT_MS);
 
   it(
@@ -331,7 +365,7 @@ describe.skipIf(!DATABASE_CONFIGURED)("queue on PostgreSQL", () => {
         },
       });
 
-      await queue.release(id);
+      await queue.release(await leaseFor(id));
 
       const row = await db.job.findUniqueOrThrow({ where: { id } });
       expect(row.status).toBe("QUEUED");
@@ -357,10 +391,10 @@ describe.skipIf(!DATABASE_CONFIGURED)("queue on PostgreSQL", () => {
       const [id] = await queueJobs(1);
       await db.job.update({
         where: { id },
-        data: { status: "RUNNING", lockedBy: "worker-a", attempts: 0 },
+        data: { status: "RUNNING", lockedBy: "worker-a", attempts: 0, leaseExpiresAt: stillValid() },
       });
 
-      await queue.release(id);
+      await queue.release(await leaseFor(id));
 
       const row = await db.job.findUniqueOrThrow({ where: { id } });
       expect(row.attempts).toBe(0);
@@ -375,7 +409,7 @@ describe.skipIf(!DATABASE_CONFIGURED)("queue on PostgreSQL", () => {
       const [id] = await queueJobs(1);
       await db.job.update({ where: { id }, data: { attempts: 2 } });
 
-      await queue.release(id);
+      await expect(queue.release(await leaseFor(id))).rejects.toBeInstanceOf(queue.LostLease);
 
       const row = await db.job.findUniqueOrThrow({ where: { id } });
       expect(row.status).toBe("QUEUED");
@@ -423,4 +457,185 @@ describe.skipIf(!DATABASE_CONFIGURED)("queue on PostgreSQL", () => {
     },
     TIMEOUT_MS
   );
+
+  it("monotonic generations fence same-worker ABA, stale completion, failure and release", async () => {
+    await queueJobs(1);
+    const first = await claimOne("same-worker");
+    await queue.release(first);
+    const second = await claimOne("same-worker");
+    expect(second.attempts).toBe(first.attempts);
+    expect(second.leaseVersion).toBe(first.leaseVersion + 1);
+    await expect(queue.complete(first)).rejects.toBeInstanceOf(queue.LostLease);
+    await expect(queue.release(first)).rejects.toBeInstanceOf(queue.LostLease);
+    expect(await queue.fail(first, { code: "SERVER", message: "stale", retryable: true })).toBe("lost");
+    const beat = await queue.heartbeat([first, second]);
+    expect(beat.alive).toEqual([{ id: second.id, leaseVersion: second.leaseVersion }]);
+    expect((await db.job.findUniqueOrThrow({ where: { id: second.id } })).status).toBe("RUNNING");
+  }, TIMEOUT_MS);
+
+  it("an expired lease cannot renew itself or commit business writes before the sweeper", async () => {
+    await queueJobs(1);
+    const lease = await claimOne();
+    await db.job.update({ where: { id: lease.id }, data: { leaseExpiresAt: expired() } });
+    expect((await queue.heartbeat([lease])).alive).toEqual([]);
+    await expect(db.$transaction(async (tx) => {
+      await queue.assertLease(tx, lease);
+      await tx.runSample.update({ where: { id: lease.sampleId! }, data: { model: "STALE" } });
+    })).rejects.toBeInstanceOf(queue.LostLease);
+    expect((await db.runSample.findUniqueOrThrow({ where: { id: lease.sampleId! } })).model).toBeNull();
+  }, TIMEOUT_MS);
+
+  it("lease checks serialize business commit against sweeper and reject late old generation", async () => {
+    await queueJobs(1);
+    const first = await claimOne();
+    await db.job.update({ where: { id: first.id }, data: { leaseExpiresAt: expired() } });
+    await sweeper.sweepExpiredLeases();
+    await makeImmediatelyClaimable(first.id);
+    const second = await claimOne("worker-b");
+    expect(second.leaseVersion).toBeGreaterThan(first.leaseVersion);
+    await expect(db.$transaction(async (tx) => {
+      await queue.assertLease(tx, first);
+      await tx.run.update({ where: { id: fixture.runId }, data: { doneSamples: { increment: 1 } } });
+    })).rejects.toBeInstanceOf(queue.LostLease);
+    await queue.complete(second);
+    expect((await db.run.findUniqueOrThrow({ where: { id: fixture.runId } })).doneSamples).toBe(0);
+  }, TIMEOUT_MS);
+
+  it("a retryable provider failure remains pending; second claimed attempt really calls provider and succeeds", async () => {
+    const test = await mockCallJob();
+    test.call.mockRejectedValueOnce(new ProviderError("SERVER", "mock", "503"));
+    await test.run(await claimOne(), { signal: new AbortController().signal, workerId: "worker-a" });
+    expect((await db.job.findUniqueOrThrow({ where: { id: test.id } })).status).toBe("QUEUED");
+    expect((await db.runTask.findUniqueOrThrow({ where: { id: fixture.taskId } })).pendingSamples).toBe(1);
+    expect((await db.runSample.findUniqueOrThrow({ where: { id: test.sampleId } })).status).toBe("RUNNING");
+    await makeImmediatelyClaimable(test.id);
+    await test.run(await claimOne(), { signal: new AbortController().signal, workerId: "worker-a" });
+    expect(test.call).toHaveBeenCalledTimes(2);
+    expect((await db.job.findUniqueOrThrow({ where: { id: test.id } })).status).toBe("SUCCEEDED");
+    const task = await db.runTask.findUniqueOrThrow({ where: { id: fixture.taskId } });
+    expect([task.pendingSamples, task.doneSamples, task.failedSamples]).toEqual([0, 1, 0]);
+    expect(await db.sampleScore.count({ where: { sampleId: test.sampleId } })).toBe(1);
+    expect(await db.job.count({ where: { runId: fixture.runId, kind: "AGGREGATE_TASK" } })).toBe(1);
+  }, TIMEOUT_MS);
+
+  it("analysis retry resumes immutable paid response without another provider call", async () => {
+    const test = await mockCallJob();
+    const analysis = await import("@/lib/runs/persist");
+    const spy = vi.spyOn(analysis, "persistSampleAnalysis").mockRejectedValueOnce(new Error("temporary analysis error"));
+    await test.run(await claimOne(), { signal: new AbortController().signal, workerId: "worker-a" });
+    const raw = await db.aIResponse.findUniqueOrThrow({ where: { sampleId: test.sampleId } });
+    expect(raw.providerSources).toEqual([]);
+    expect((await db.run.findUniqueOrThrow({ where: { id: fixture.runId } })).doneSamples).toBe(0);
+    spy.mockRestore();
+    await makeImmediatelyClaimable(test.id);
+    await test.run(await claimOne(), { signal: new AbortController().signal, workerId: "worker-a" });
+    expect(test.call).toHaveBeenCalledTimes(1);
+    expect((await db.aIResponse.findUniqueOrThrow({ where: { sampleId: test.sampleId } })).id).toBe(raw.id);
+    expect((await db.runSample.findUniqueOrThrow({ where: { id: test.sampleId } })).status).toBe("COMPLETED");
+  }, TIMEOUT_MS);
+
+  it("exhausted analysis is FAILED, retains raw and usage, and counts once", async () => {
+    const test = await mockCallJob();
+    const analysis = await import("@/lib/runs/persist");
+    vi.spyOn(analysis, "persistSampleAnalysis").mockRejectedValue(new Error("permanent analysis error"));
+    await db.job.update({ where: { id: test.id }, data: { maxAttempts: 1 } });
+    const lease = await claimOne();
+    await test.run(lease, { signal: new AbortController().signal, workerId: "worker-a" });
+    expect((await db.job.findUniqueOrThrow({ where: { id: test.id } })).status).toBe("FAILED");
+    const sample = await db.runSample.findUniqueOrThrow({ where: { id: test.sampleId }, include: { response: true } });
+    expect(sample.status).toBe("FAILED");
+    expect(sample.response?.rawText).toBe("A stored test response.");
+    expect([sample.tokensIn, sample.tokensOut, sample.model]).toEqual([7, 11, "test-model"]);
+    expect(await db.sampleScore.count({ where: { sampleId: sample.id } })).toBe(0);
+    await test.run(lease, { signal: new AbortController().signal, workerId: "worker-a" });
+    expect((await db.run.findUniqueOrThrow({ where: { id: fixture.runId } })).failedSamples).toBe(1);
+  }, TIMEOUT_MS);
+
+  it("expired exhausted job repairs even a PENDING sample and run counters exactly once", async () => {
+    const [id] = await queueJobs(1);
+    const lease = await claimOne();
+    await db.job.update({ where: { id }, data: { attempts: 4, leaseExpiresAt: expired() } });
+    await db.runSample.update({ where: { id: lease.sampleId! }, data: { createdAt: expired() } });
+    await sweeper.sweepExpiredLeases();
+    expect(await sweeper.reconcileOrphanSamples()).toBeGreaterThanOrEqual(1);
+    await sweeper.reconcileOrphanSamples();
+    const task = await db.runTask.findUniqueOrThrow({ where: { id: fixture.taskId } });
+    const run = await db.run.findUniqueOrThrow({ where: { id: fixture.runId } });
+    expect([task.pendingSamples, task.failedSamples, run.failedSamples]).toEqual([0, 1, 1]);
+    expect(await db.job.count({ where: { runId: fixture.runId, kind: "AGGREGATE_TASK" } })).toBe(1);
+  }, TIMEOUT_MS);
+
+  it("cancel plus expiry drains pending samples and never resurrects a cancelled run", async () => {
+    await queueJobs(2);
+    const lease = await claimOne();
+    await db.run.update({ where: { id: fixture.runId }, data: { status: "CANCELLING", cancelRequestedAt: new Date() } });
+    await db.job.update({ where: { id: lease.id }, data: { leaseExpiresAt: expired() } });
+    await sweeper.runSweep();
+    expect((await db.run.findUniqueOrThrow({ where: { id: fixture.runId } })).status).toBe("CANCELLED");
+    expect(await db.runSample.count({ where: { runId: fixture.runId, status: "CANCELLED" } })).toBe(2);
+    expect(await db.job.count({ where: { runId: fixture.runId, status: { in: ["QUEUED", "RUNNING"] } } })).toBe(0);
+    expect(await queue.claim({ workerId: "late", providerCodes: [providerCode], limit: 5 })).toEqual([]);
+    await expect(queue.complete(lease)).rejects.toBeInstanceOf(queue.LostLease);
+  }, TIMEOUT_MS);
+
+  it("same extraction rescoring uses complete stored evidence, not reconstructed entity names or new raw extraction", async () => {
+    const test = await mockCallJob();
+    const lease = await claimOne();
+    const brand = await db.brand.create({ data: { projectId: fixture.projectId, name: "Renamed catalog brand" } });
+    await db.run.update({ where: { id: fixture.runId }, data: { configSnapshot: {
+      version: 1, reconstructed: true, entities: [{ id: brand.id, name: "Renamed catalog brand", kind: "BRAND", aliases: [], domain: null }],
+    } } });
+    await db.sampleScore.create({ data: {
+      sampleId: test.sampleId, taskId: fixture.taskId, runId: fixture.runId,
+      scoringVersion: "v2", extractionVersion: "v2", score: 42, brandPresent: true, shareOfVoice: 1, contributions: [],
+    } });
+    await db.brandMention.create({ data: {
+      sampleId: test.sampleId, runId: fixture.runId, projectId: fixture.projectId, brandId: brand.id, extractionVersion: "v2",
+      mentionType: "EXACT", occurrenceIndex: 0, charOffset: 0, sentenceIndex: 0, normalizedPosition: 0,
+      inFirstSentence: true, orderRank: 0, occurrencesTotal: 1, context: "Original brand", confidence: 1,
+      sentiment: "POSITIVE", sentimentScore: 0.8, sentimentJudgeVersion: "legacy-judge",
+    } });
+    await db.citation.create({ data: {
+      sampleId: test.sampleId, runId: fixture.runId, projectId: fixture.projectId, url: "https://original.example",
+      normalizedUrl: "https://original.example/", domain: "original.example", sourceKind: "NATIVE", isBrandDomain: true, extractionVersion: "v2",
+    } });
+    const judge = await import("@/lib/sentiment/judge");
+    const judgeSpy = vi.spyOn(judge, "judgeSentiment");
+    const { persistSampleAnalysis } = await import("@/lib/runs/persist");
+    await persistSampleAnalysis({
+      sampleId: test.sampleId, taskId: fixture.taskId, runId: fixture.runId, projectId: fixture.projectId, userId: fixture.userId,
+      mode: "PARAMETRIC", text: "No matching name or link in this reconstructed input.", providerSources: [],
+      scoringVersion: "v3", extractionVersion: "v2", lease,
+    });
+    const scored = await db.sampleScore.findUniqueOrThrow({ where: { sampleId_scoringVersion: { sampleId: test.sampleId, scoringVersion: "v3" } } });
+    expect(scored.brandPresent).toBe(true);
+    expect(scored.brandOccurrences).toBe(1);
+    expect(scored.citationCount).toBe(1);
+    expect(scored.brandDomainCited).toBe(true);
+    expect(judgeSpy).not.toHaveBeenCalled();
+    expect((await db.sampleScore.findUniqueOrThrow({ where: { sampleId_scoringVersion: { sampleId: test.sampleId, scoringVersion: "v2" } } })).score).toBe(42);
+    expect((await db.brandMention.findFirstOrThrow({ where: { sampleId: test.sampleId } })).sentimentJudgeVersion).toBe("legacy-judge");
+  }, TIMEOUT_MS);
+
+  it("lease stolen while sentiment is in flight prevents evidence and score writes", async () => {
+    const test = await mockCallJob();
+    const lease = await claimOne();
+    const brand = await db.brand.create({ data: { projectId: fixture.projectId, name: "Acme" } });
+    await db.run.update({ where: { id: fixture.runId }, data: { configSnapshot: {
+      version: 1, reconstructed: false, entities: [{ id: brand.id, name: "Acme", kind: "BRAND", aliases: [], domain: null }],
+    } } });
+    const judge = await import("@/lib/sentiment/judge");
+    vi.spyOn(judge, "judgeSentiment").mockImplementation(async () => {
+      await db.job.update({ where: { id: lease.id }, data: { lockedBy: "replacement", leaseVersion: { increment: 1 } } });
+      return new Map();
+    });
+    const { persistSampleAnalysis } = await import("@/lib/runs/persist");
+    await expect(persistSampleAnalysis({
+      sampleId: test.sampleId, taskId: fixture.taskId, runId: fixture.runId, projectId: fixture.projectId, userId: fixture.userId,
+      mode: "PARAMETRIC", text: "Acme is the best.", providerSources: [], scoringVersion: "v3", extractionVersion: "v3", lease,
+    })).rejects.toBeInstanceOf(queue.LostLease);
+    expect(await db.sampleScore.count({ where: { sampleId: test.sampleId } })).toBe(0);
+    expect(await db.brandMention.count({ where: { sampleId: test.sampleId } })).toBe(0);
+  }, TIMEOUT_MS);
+
 });

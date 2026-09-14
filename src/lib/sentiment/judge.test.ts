@@ -10,13 +10,17 @@ const mocks = vi.hoisted(() => ({
     sentimentJudgment: { findMany: vi.fn(), createMany: vi.fn() },
     provider: { findUnique: vi.fn() },
     providerCredential: { findUnique: vi.fn() },
+    $transaction: vi.fn(),
   },
   runQuery: vi.fn(),
   tryConsume: vi.fn(),
+  warn: vi.fn(),
+  assertLease: vi.fn(),
 }));
 
 vi.mock("@/lib/env", () => ({ getEnv: () => mocks.env }));
 vi.mock("@/lib/prisma", () => ({ prisma: mocks.prisma }));
+vi.mock("@/lib/logger", () => ({ logger: { warn: mocks.warn } }));
 vi.mock("@/lib/providers/registry", () => ({
   getProvider: (code: string) => (code === "unknown" ? undefined : { runQuery: mocks.runQuery }),
 }));
@@ -25,8 +29,13 @@ vi.mock("@/lib/queue/ratelimit", () => ({
   tryConsume: mocks.tryConsume,
   bucketKeyForProvider: (code: string) => `provider:${code}`,
 }));
+vi.mock("@/lib/queue/client", () => ({
+  assertLease: mocks.assertLease,
+  LostLease: class LostLease extends Error {},
+}));
+import { LostLease } from "@/lib/queue/client";
 
-import { judgeSentiment } from "@/lib/sentiment/judge";
+import { judgeSentiment, sentimentKey } from "@/lib/sentiment/judge";
 
 const validCredential = {
   id: "cred1",
@@ -57,6 +66,8 @@ beforeEach(() => {
   mocks.prisma.provider.findUnique.mockResolvedValue({ id: "p1" });
   mocks.prisma.providerCredential.findUnique.mockResolvedValue(validCredential);
   mocks.tryConsume.mockResolvedValue(true);
+  mocks.assertLease.mockResolvedValue(undefined);
+  mocks.prisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => fn(mocks.prisma));
 });
 
 describe("judgeSentiment", () => {
@@ -82,13 +93,13 @@ describe("judgeSentiment", () => {
     });
 
     expect(mocks.runQuery).not.toHaveBeenCalled();
-    expect(result.get("b1")).toEqual({ sentiment: "POSITIVE", score: 0.8, confidence: 0.9 });
+    expect(result.get(sentimentKey("b1", "excellent"))).toEqual({ sentiment: "POSITIVE", score: 0.8, confidence: 0.9 });
   });
 
   it("deduplicates contexts that differ only by whitespace", async () => {
     mocks.prisma.sentimentJudgment.findMany.mockImplementation(cachedAs({ sentiment: "NEUTRAL", score: 0 }));
 
-    await judgeSentiment(
+    const result = await judgeSentiment(
       [
         { entityId: "b1", entityName: "Acme", context: "  une   réponse " },
         { entityId: "b1", entityName: "Acme", context: "une réponse" },
@@ -98,9 +109,11 @@ describe("judgeSentiment", () => {
 
     const [{ where }] = mocks.prisma.sentimentJudgment.findMany.mock.calls[0];
     expect(where.cacheKey.in).toHaveLength(1);
+    expect(result.size).toBe(1);
+    expect(result.has(sentimentKey("b1", "une réponse"))).toBe(true);
   });
 
-  it("keeps the most negative verdict when contexts disagree", async () => {
+  it("keeps contrasting contexts for one entity separate without a negativity selection", async () => {
     mocks.prisma.sentimentJudgment.findMany.mockImplementation(
       cachedAs({ sentiment: "POSITIVE", score: 0.9 }, { sentiment: "NEGATIVE", score: -0.7 })
     );
@@ -113,10 +126,13 @@ describe("judgeSentiment", () => {
       { userId: "u1" }
     );
 
-    expect(result.get("b1")?.sentiment).toBe("NEGATIVE");
+    expect(result.size).toBe(2);
+    expect(result.get(sentimentKey("b1", "le meilleur"))?.sentiment).toBe("POSITIVE");
+    expect(result.get(sentimentKey("b1", "à éviter"))?.sentiment).toBe("NEGATIVE");
+    expect(result.has("b1")).toBe(false);
   });
 
-  it("prefers MIXED over NEUTRAL — a split opinion is not an endorsement", async () => {
+  it("does not overwrite a neutral context with a separate mixed context", async () => {
     mocks.prisma.sentimentJudgment.findMany.mockImplementation(
       cachedAs({ sentiment: "NEUTRAL", score: 0 }, { sentiment: "MIXED", score: 0.1 })
     );
@@ -129,7 +145,8 @@ describe("judgeSentiment", () => {
       { userId: "u1" }
     );
 
-    expect(result.get("b1")?.sentiment).toBe("MIXED");
+    expect(result.get(sentimentKey("b1", "un acteur du marché"))?.sentiment).toBe("NEUTRAL");
+    expect(result.get(sentimentKey("b1", "rapide mais cher"))?.sentiment).toBe("MIXED");
   });
 
   it("returns nothing rather than throwing when the user has no valid credential", async () => {
@@ -152,10 +169,10 @@ describe("judgeSentiment", () => {
       userId: "u1",
     });
 
-    expect(result.get("b1")).toEqual({ sentiment: "NEGATIVE", score: -1, confidence: 1 });
+    expect(result.get(sentimentKey("b1", "décevant"))).toEqual({ sentiment: "NEGATIVE", score: -1, confidence: 1 });
     const [{ data }] = mocks.prisma.sentimentJudgment.createMany.mock.calls[0];
     expect(data).toHaveLength(1);
-    expect(data[0].judgeVersion).toBe("judge-v1");
+    expect(data[0].judgeVersion).toBe("judge-v2-context");
   });
 
   it("asks the judge in PARAMETRIC mode with the configured model", async () => {
@@ -188,6 +205,24 @@ describe("judgeSentiment", () => {
     ).resolves.toEqual(new Map());
   });
 
+  it("does not log provider errors that can echo private excerpts or credentials", async () => {
+    mocks.runQuery.mockRejectedValue(new Error("private excerpt sk-private-key"));
+    await judgeSentiment([{ entityId: "b1", entityName: "Acme", context: "private excerpt" }], { userId: "u1" });
+    expect(mocks.warn).toHaveBeenCalledWith("sentiment judge unavailable", {
+      providerCode: "openai", errorType: "Error",
+    });
+    expect(JSON.stringify(mocks.warn.mock.calls)).not.toMatch(/private excerpt|sk-private-key/);
+  });
+
+  it("returns no invented judgments on a private cache read failure", async () => {
+    mocks.prisma.sentimentJudgment.findMany.mockRejectedValue(new Error("private cache payload"));
+    expect(await judgeSentiment([
+      { entityId: "b1", entityName: "Acme", context: "private excerpt" },
+    ], { userId: "u1" })).toEqual(new Map());
+    expect(mocks.runQuery).not.toHaveBeenCalled();
+    expect(JSON.stringify(mocks.warn.mock.calls)).not.toMatch(/private/);
+  });
+
   it("ignores a verdict pointing at an item that was never sent", async () => {
     mocks.runQuery.mockResolvedValue({
       text: '[{"index":7,"sentiment":"POSITIVE","score":1,"confidence":1}]',
@@ -199,6 +234,77 @@ describe("judgeSentiment", () => {
 
     expect(result.size).toBe(0);
   });
+
+  it("deduplicates fresh judgments and reuses the content-addressed cache across calls", async () => {
+    mocks.runQuery.mockResolvedValue({
+      text: '[{"index":0,"sentiment":"POSITIVE","score":0.8,"confidence":0.9}]',
+    });
+    const items = [
+      { entityId: "b1", entityName: "Acme", context: "excellent" },
+      { entityId: "b1", entityName: "Acme", context: "  excellent " },
+    ];
+    const first = await judgeSentiment(items, { userId: "u1" });
+    const [{ data }] = mocks.prisma.sentimentJudgment.createMany.mock.calls[0];
+    expect(data).toHaveLength(1);
+    expect(Object.keys(data[0]).sort()).toEqual(["cacheKey", "confidence", "judgeVersion", "score", "sentiment"]);
+    mocks.prisma.sentimentJudgment.findMany.mockResolvedValue(data);
+    const second = await judgeSentiment(items, { userId: "u1" });
+    expect(second).toEqual(first);
+    expect(mocks.runQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves available cached contexts when an optional fresh judgment fails", async () => {
+    mocks.prisma.sentimentJudgment.findMany.mockImplementation(
+      async ({ where }: { where: { cacheKey: { in: string[] } } }) => [{
+        cacheKey: where.cacheKey.in[0], sentiment: "POSITIVE", score: 0.8, confidence: 0.9,
+      }]
+    );
+    mocks.runQuery.mockRejectedValue(new Error("unavailable"));
+    const result = await judgeSentiment([
+      { entityId: "b1", entityName: "Acme", context: "excellent" },
+      { entityId: "b1", entityName: "Acme", context: "nouvel avis" },
+    ], { userId: "u1" });
+    expect(result.size).toBe(1);
+    expect(result.get(sentimentKey("b1", "excellent"))?.sentiment).toBe("POSITIVE");
+    expect(result.has(sentimentKey("b1", "nouvel avis"))).toBe(false);
+  });
+
+  it("leaves a missing verdict absent instead of inventing a neutral one", async () => {
+    mocks.runQuery.mockResolvedValue({
+      text: '[{"index":0,"sentiment":"POSITIVE","score":0.8,"confidence":0.9}]',
+    });
+    const result = await judgeSentiment([
+      { entityId: "b1", entityName: "Acme", context: "excellent" },
+      { entityId: "b1", entityName: "Acme", context: "autre avis" },
+    ], { userId: "u1" });
+    expect(result.size).toBe(1);
+    expect(result.has(sentimentKey("b1", "autre avis"))).toBe(false);
+  });
+
+  it("retains occurrence identity when different long contexts share truncated judge input", async () => {
+    mocks.prisma.sentimentJudgment.findMany.mockImplementation(cachedAs({ sentiment: "NEUTRAL", score: 0 }));
+    const prefix = "x".repeat(400);
+    const result = await judgeSentiment([
+      { entityId: "b1", entityName: "Acme", context: `${prefix} positive` },
+      { entityId: "b1", entityName: "Acme", context: `${prefix} negative` },
+    ], { userId: "u1" });
+    expect(result.size).toBe(2);
+    const [{ where }] = mocks.prisma.sentimentJudgment.findMany.mock.calls[0];
+    expect(where.cacheKey.in).toHaveLength(1);
+  });
+});
+
+describe("sentimentKey", () => {
+  it("is deterministic, whitespace-normalized and includes entity identity", () => {
+    expect(sentimentKey("b1", " nice  product ")).toBe(sentimentKey("b1", "nice product"));
+    expect(sentimentKey("b1", "nice product")).not.toBe(sentimentKey("b2", "nice product"));
+    expect(sentimentKey("b1", "nice product")).not.toBe(sentimentKey("b1", "poor product"));
+  });
+
+  it("does not collide on separators or expose context text in its key", () => {
+    expect(sentimentKey("a|b", "c")).not.toBe(sentimentKey("a", "b|c"));
+    expect(sentimentKey("b1", "private context")).toMatch(/^[a-f0-9]{64}$/);
+  });
 });
 
 /**
@@ -207,6 +313,25 @@ describe("judgeSentiment", () => {
  * could see.
  */
 describe("judgeSentiment rate limiting", () => {
+  it("fences cache writes after a provider call and propagates stale ownership", async () => {
+    mocks.runQuery.mockResolvedValue({ text: '[{"index":0,"sentiment":"POSITIVE","score":0.5,"confidence":0.9}]' });
+    mocks.assertLease.mockRejectedValue(new LostLease("job1"));
+    await expect(judgeSentiment([{ entityId: "b1", entityName: "Acme", context: "bien" }], {
+      userId: "u1", lease: { id: "job1", lockedBy: "old", leaseVersion: 1, runId: "r1" },
+    })).rejects.toBeInstanceOf(LostLease);
+    expect(mocks.prisma.sentimentJudgment.createMany).not.toHaveBeenCalled();
+  });
+
+  it("checks ownership before and after a transactional cache write", async () => {
+    mocks.runQuery.mockResolvedValue({ text: '[{"index":0,"sentiment":"POSITIVE","score":0.5,"confidence":0.9}]' });
+    await judgeSentiment([{ entityId: "b1", entityName: "Acme", context: "bien" }], {
+      userId: "u1", lease: { id: "job1", lockedBy: "owner", leaseVersion: 1, runId: "r1" },
+    });
+    expect(mocks.assertLease).toHaveBeenCalledTimes(2);
+    expect(mocks.assertLease.mock.invocationCallOrder[0]).toBeLessThan(mocks.prisma.sentimentJudgment.createMany.mock.invocationCallOrder[0]);
+    expect(mocks.prisma.sentimentJudgment.createMany.mock.invocationCallOrder[0]).toBeLessThan(mocks.assertLease.mock.invocationCallOrder[1]);
+  });
+
   it("charges the provider bucket before spending a call", async () => {
     mocks.runQuery.mockResolvedValue({
       text: '[{"index":0,"sentiment":"POSITIVE","score":0.5,"confidence":0.9}]',

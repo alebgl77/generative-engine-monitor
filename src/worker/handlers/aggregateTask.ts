@@ -1,4 +1,4 @@
-import { complete, fail } from "@/lib/queue/client";
+import { fail, LostLease } from "@/lib/queue/client";
 import type { AggregateTaskPayload, JobHandler } from "@/lib/queue/types";
 import { aggregateTask } from "@/lib/scoring/aggregate";
 import { logger } from "@/lib/logger";
@@ -11,11 +11,11 @@ export const aggregateTaskHandler: JobHandler = async (job) => {
   const payload = job.payload as AggregateTaskPayload;
 
   try {
-    await aggregateTask(payload.taskId, payload.scoringVersion);
-    await complete(job.id);
+    await aggregateTask(payload.taskId, payload.scoringVersion, job, payload.promoteVersion === true);
   } catch (error) {
+    if (error instanceof LostLease) return;
     const message = error instanceof Error ? error.message : String(error);
     logger.error("aggregate task job failed", { jobId: job.id, taskId: payload.taskId, message });
-    await fail(job.id, { code: "AGGREGATE", message, retryable: true });
+    await fail(job, { code: "AGGREGATE", message, retryable: true });
   }
 };
