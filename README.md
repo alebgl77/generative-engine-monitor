@@ -1,296 +1,302 @@
 # Generative Engine Monitor
 
-Un observatoire self-hosted de la visibilité générative, fondé sur les réponses réellement observées via les API des fournisseurs.
+**English** · [Français](README.fr.md)
 
-![Vue bureau de la chambre des signaux](docs/screenshots/signal-room.png)
+Most detailed documentation under [docs/](docs/) is currently written in French; the production runbook and the
+measurement methodology are in English.
 
-Generative Engine Monitor rapporte les médianes, les intervalles de confiance et la décomposition de chaque score.
-Les analyses peuvent être rejouées à partir des réponses conservées, sans masquer la taille de l'échantillon ni la méthode employée.
+A self-hosted observatory for generative visibility, based on the responses actually observed through provider APIs.
 
-L'application est distribuée pour être **auto-hébergée** : chaque utilisateur installe et exploite sa propre instance,
-sur sa machine ou son serveur, avec sa base et ses secrets. Il ne s'agit pas d'un SaaS centralisé. Aucune télémétrie
-ni aucun partage public ne sont activés implicitement, et publier le code source ne rend ni votre instance ni vos données
-publiques. Les clés fournisseurs sont chiffrées au repos.
+![Desktop view of the signal room](docs/screenshots/signal-room.png)
 
-[Installer son instance](docs/02-installation.md#installer-sa-propre-instance) ·
-[Lire la méthodologie](docs/measurement-methodology.md) ·
-[Préparer la production](docs/production-runbook.md)
+Generative Engine Monitor reports medians, confidence intervals, and the breakdown of every score.
+Analyses can be replayed from the stored responses, without hiding the sample size or the method used.
 
-## Démarrage rapide — instance self-hosted
+The application is distributed to be **self-hosted**: each user installs and operates their own instance,
+on their own machine or server, with their own database and secrets. It is not a centralized SaaS. No telemetry
+or public sharing is enabled implicitly, and publishing the source code makes neither your instance nor your data
+public. Provider keys are encrypted at rest.
+
+[Install your instance](docs/02-installation.md#installer-sa-propre-instance) ·
+[Read the methodology](docs/measurement-methodology.md) ·
+[Prepare for production](docs/production-runbook.md)
+
+## Quick start — self-hosted instance
 
 ```bash
 cp .env.example .env
-npm install             # `keygen` s'exécute par tsx, livré avec les dépendances
-npm run keygen          # génère NEXTAUTH_SECRET, CREDENTIAL_KEYS et le pepper — à coller dans .env
+npm install             # `keygen` runs via tsx, which ships with the dependencies
+npm run keygen          # generates NEXTAUTH_SECRET, CREDENTIAL_KEYS and the pepper — paste them into .env
 docker compose up
 ```
 
-La pile comprend PostgreSQL, un migrateur ponctuel, l'application web sur http://localhost:3000 et un worker séparé.
-Le web et le worker attendent la fin du migrateur. Sans worker, les analyses sont planifiées mais n'avancent pas.
+The stack includes PostgreSQL, a one-shot migrator, the web application at http://localhost:3000 and a separate worker.
+The web and worker services wait for the migrator to finish. Without a worker, analyses are scheduled but do not progress.
 
-Commencez par le [guide d'installation auto-hébergée](docs/02-installation.md#installer-sa-propre-instance). Un accès local
-ou par tunnel SSH peut rester privé ; une exposition réseau nécessite votre configuration HTTPS. Sauvegardes, mises à
-jour et conservation des secrets restent à votre charge.
+Start with the [self-hosted installation guide](docs/02-installation.md#installer-sa-propre-instance). Local access
+or access through an SSH tunnel can remain private; network exposure requires your own HTTPS configuration. Backups,
+updates, and secret retention remain your responsibility.
 
-Pour une mise en production, suivez le [runbook](docs/production-runbook.md) : arrêtez les anciens processus web et workers
-avant la migration, sans déploiement progressif mêlant deux versions. Préparez vos secrets avec
-`.env.production.example` ; ne réutilisez ni `.env.example` ni les données de démonstration. La qualification Docker réelle
-n’a pas été exécutée sur l’environnement Windows local. Pour ce commit, le job GitHub Actions Ubuntu `containers` qualifie
-cependant les trois images, Compose, le migrateur et sa gate, la readiness web, la santé du worker, l’exécution non-root
-et le parcours HTTP mocké. Restent hors qualification les fournisseurs, credentials et facturations réels, la charge et
-les P99, le multi-réplica et le drain, la restauration et le PITR, le TLS/proxy de production ainsi que la validité
-scientifique externe ; voir la [limite de validation](docs/production-runbook.md#validation-boundary-and-external-work).
+For a production deployment, follow the [runbook](docs/production-runbook.md): stop the old web and worker processes
+before migrating, with no rolling deployment mixing two versions. Prepare your secrets from
+`.env.production.example`; do not reuse `.env.example` or the demo data. Actual Docker qualification has not been run
+in the local Windows environment. For this commit, however, the Ubuntu GitHub Actions `containers` job qualifies
+the three images, Compose, the migrator and its gate, web readiness, worker health, non-root execution, and the mocked
+HTTP flow. The following remain outside the qualification scope: real providers, credentials, and billing; load and
+P99 latency; multi-replica operation and draining; restore and PITR; production TLS/proxy; and external scientific
+validity; see the [validation boundary](docs/production-runbook.md#validation-boundary-and-external-work).
 
-Les appels vers de vrais moteurs utilisent vos comptes fournisseurs, transmettent le contenu demandé à leurs API et
-peuvent entraîner des frais. Les limites de volume de l'application ne constituent pas un plafond monétaire.
+Calls to real engines use your provider accounts, send the requested content to their APIs, and
+may incur charges. The application's volume limits are not a spending cap.
 
-## Des constats vérifiables, pas une note magique
+## Verifiable findings, not a magic score
 
-### Constats de signal
+### Signal findings
 
-La synthèse apparie une même **requête × fournisseur** dans les modes paramétrique et groundé. Elle fait remonter
-trois situations lisibles : invisibilité dans les deux modes, érosion lorsque la recherche dégrade le signal,
-et récupération lorsqu'elle l'améliore.
+The summary pairs the same **query × provider** across the parametric and grounded modes. It surfaces
+three readable situations: invisibility in both modes, erosion when search degrades the signal,
+and recovery when search improves it.
 
-Ces constats restent descriptifs et non causaux. La variation observée, la taille du support, la méthode et l'indicateur
-de faible échantillon restent visibles pour éviter de transformer une tendance fragile en certitude.
+These findings are descriptive, not causal. The observed variation, the support size, the method, and the low-sample
+indicator stay visible so that a fragile trend is not turned into a certainty.
 
-### Passeport de mesure
+### Measurement passport
 
-Depuis l'interface, une mesure peut être prévisualisée puis copiée en Markdown ou téléchargée en JSON. Le passeport
-indique la version, le run, le support et la méthode qui rendent le résultat interprétable.
+From the interface, a measurement can be previewed, then copied as Markdown or downloaded as JSON. The passport
+states the version, the run, the support, and the method that make the result interpretable.
 
-L'export est préparé localement dans le navigateur. Il n'inclut aucune réponse brute, aucun identifiant interne,
-aucune clé fournisseur et aucun secret d'authentification.
+The export is prepared locally in the browser. It includes no raw responses, no internal identifiers,
+no provider keys, and no authentication secrets.
 
 <p align="center">
-  <img src="docs/screenshots/signal-room-mobile.png" width="390" alt="Vue mobile de la chambre des signaux">
+  <img src="docs/screenshots/signal-room-mobile.png" width="390" alt="Mobile view of the signal room">
 </p>
 
-Une part croissante de la découverte de marque ne passe plus par une page de résultats mais par une réponse rédigée :
-l'utilisateur pose sa question à ChatGPT, Claude, Gemini ou Perplexity, lit un paragraphe, et n'ouvre souvent aucun lien.
-Mesurer sa présence dans ces réponses n'est pas la même discipline que mesurer un classement. Il n'y a pas de position 3
-stable à surveiller : il y a une distribution de réponses, dont chaque tirage nomme des marques dans un ordre différent,
-s'appuie ou non sur des sources, et change selon que le moteur consulte le web ou récite ce qu'il a appris. Un outil
-qui ramène tout cela à un chiffre unique par requête mesure surtout son propre bruit d'échantillonnage.
+A growing share of brand discovery no longer goes through a results page but through a written answer:
+the user asks ChatGPT, Claude, Gemini, or Perplexity a question, reads a paragraph, and often opens no link at all.
+Measuring a brand's presence in these answers is not the same discipline as measuring a ranking. There is no stable
+position 3 to track: there is a distribution of answers, each draw of which names brands in a different order,
+may or may not rely on sources, and changes depending on whether the engine consults the web or recites what it
+learned. A tool that reduces all of this to a single number per query mostly measures its own sampling noise.
 
-## Ce que cet outil fait différemment
+## What this tool does differently
 
-### Deux axes, jamais mélangés
+### Two axes, never mixed
 
-Chaque requête est posée deux fois : en mode **PARAMETRIC**, tous les outils de recherche désactivés — ce que le modèle
-a retenu de son entraînement — et en mode **GROUNDED**, la recherche web native du fournisseur activée — ce qu'il va
-chercher au moment de répondre. Les deux médianes sont rapportées côte à côte et jamais moyennées, car leur différence
-est l'unique diagnostic actionnable qu'elles portent ensemble. Un **écart de récupération** positif signifie que la
-recherche vous sert et que l'investissement utile est le contenu que les moteurs iront chercher ; un écart négatif
-signifie que les modèles vous connaissent mais cessent de vous citer dès qu'ils consultent leurs sources,
-et l'investissement utile devient ces sources-là.
+Each query is asked twice: in **PARAMETRIC** mode, with all search tools disabled — what the model
+retained from its training — and in **GROUNDED** mode, with the provider's native web search enabled — what it
+goes looking for at answer time. The two medians are reported side by side and never averaged, because their
+difference is the only actionable diagnostic they carry together. A positive **retrieval gap** means that
+search works in your favor and that the worthwhile investment is the content the engines will retrieve; a negative
+gap means that the models know you but stop citing you as soon as they consult their sources,
+and the worthwhile investment becomes those sources.
 
-### Des intervalles, jamais un chiffre sec
+### Intervals, never a bare number
 
-Deux appels identiques au même modèle ne produisent pas la même réponse : la marque citée en premier dans un tirage
-peut être absente du suivant. Chaque cellule (requête × moteur × mode) est donc échantillonnée N fois — trois par défaut.
-La méthode courante construit les résumés et intervalles par **groupes de requêtes indépendantes**, en distinguant leur
-nombre du nombre de répétitions : répéter un appel ne crée pas une nouvelle requête indépendante. Une tâche limitée
-à une requête reste descriptive, sans intervalle par groupes. Le tirage bootstrap est déterministe et `lowN` dépend du
-nombre de requêtes ; voir la [méthodologie de mesure](docs/measurement-methodology.md) pour les méthodes courantes,
-la compatibilité historique et les limites d'interprétation.
+Two identical calls to the same model do not produce the same answer: the brand cited first in one draw
+can be absent from the next. Each cell (query × engine × mode) is therefore sampled N times — three by default.
+The current method builds summaries and intervals over **clusters of independent queries**, keeping their count
+distinct from the number of repeats: repeating a call does not create a new independent query. A task limited
+to a single query remains descriptive, with no cluster-based interval. The bootstrap resampling is deterministic and
+`lowN` depends on the number of queries; see the [measurement methodology](docs/measurement-methodology.md) for the
+current methods, historical compatibility, and interpretation limits.
 
-### Des scores explicables et rejouables
+### Explainable, replayable scores
 
-Un score n'est jamais un nombre opaque : il est la somme signée de contributions par règle, chacune accompagnée de
-l'évidence qui l'a déclenchée — décalages de caractères dans la réponse, URL des citations retenues, verdict de sentiment
-majoritaire. Cette décomposition est persistée telle qu'elle a été calculée, puis rendue telle qu'elle a été persistée.
-Comme le texte brut et la charge utile JSON de chaque réponse sont stockés intégralement, une analyse éligible peut être
-**rejouée** sous une version de scoring ou d'extraction différente, sans acquérir de nouvelles réponses. Un éventuel
-nouvel appel au juge de sentiment peut toutefois être payant. Le replay passe par la même file de jobs qu'un run réel,
-avec sa progression, ses reprises et son annulation ; ses conditions sont décrites dans la
-[méthodologie de mesure](docs/measurement-methodology.md).
+A score is never an opaque number: it is the signed sum of per-rule contributions, each accompanied by
+the evidence that triggered it — character offsets in the response, URLs of the retained citations, the majority
+sentiment verdict. This breakdown is persisted exactly as it was computed, then rendered exactly as it was persisted.
+Because the raw text and the JSON payload of every response are stored in full, an eligible analysis can be
+**replayed** under a different scoring or extraction version, without acquiring new responses. Any new call to the
+sentiment judge may, however, incur a cost. A replay goes through the same job queue as a real run,
+with its progress tracking, retries, and cancellation; its conditions are described in the
+[measurement methodology](docs/measurement-methodology.md).
 
 ## Architecture
 
-L'application Next.js ne fait jamais d'appel fournisseur dans le cycle d'une requête HTTP. Lancer une analyse
-**matérialise le plan entier** — un `Run`, ses `RunTask` (une par cellule), ses `RunSample` (un par appel payant) et les
-jobs correspondants — dans une seule transaction PostgreSQL, puis répond `202`. L'exécution appartient à un ou plusieurs
-processus **worker** séparés qui drainent une file durable adossée à Postgres : réclamation par
-`SELECT … FOR UPDATE SKIP LOCKED` (des workers concurrents prennent des lots disjoints sans se bloquer), bail à heartbeat
-(un worker tué rend ses jobs au balayeur au lieu de les immobiliser), seau à jetons partagé en base (la limite qui compte
-est celle du fournisseur, pas celle d'un conteneur). La progression est portée par des compteurs décrémentés dans la
-transaction qui écrit le résultat : `pendingSamples` à zéro déclenche l'agrégation de la tâche, `pendingTasks` à zéro
-celle du run. Rien ne fait de polling, et le conteneur web peut redémarrer en plein run sans perdre de travail.
+The Next.js application never makes a provider call within the lifecycle of an HTTP request. Launching an analysis
+**materializes the entire plan** — a `Run`, its `RunTask` records (one per cell), its `RunSample` records (one per
+billable call), and the corresponding jobs — in a single PostgreSQL transaction, then responds `202`. Execution belongs
+to one or more separate **worker** processes that drain a durable, Postgres-backed queue: claiming via
+`SELECT … FOR UPDATE SKIP LOCKED` (concurrent workers take disjoint batches without blocking each other), heartbeat
+leases (a killed worker hands its jobs back to the sweeper instead of stranding them), and a token bucket shared in the
+database (the limit that matters is the provider's, not a container's). Progress is tracked by counters decremented
+in the transaction that writes the result: `pendingSamples` reaching zero triggers the task's aggregation, and
+`pendingTasks` reaching zero triggers the run's. Nothing polls, and the web container can restart mid-run without
+losing work.
 
-## Développement et démonstration
+## Development and demo
 
-Les commandes ci-dessous sont réservées au **développement sur une base isolée**.
+The commands below are intended only for **development against an isolated database**.
 
 ### Local
 
-Prérequis : Node ≥ 20.11 et PostgreSQL 16.
+Prerequisites: Node ≥ 20.11 and PostgreSQL 16.
 
 ```bash
-./setup.sh              # crée .env, installe les dépendances, génère les secrets, s'arrête
-#                         pointez alors DATABASE_URL sur votre instance dans ce .env
-./setup.sh              # client Prisma, migrations, seed
-npm run dev             # application web
-npm run worker          # exécuteur d'analyses, dans un second terminal
+./setup.sh              # creates .env, installs dependencies, generates secrets, then stops
+#                         now point DATABASE_URL at your instance in that .env
+./setup.sh              # Prisma client, migrations, seed
+npm run dev             # web application
+npm run worker          # analysis runner, in a second terminal
 ```
 
-`setup.sh` ne génère les secrets que lorsqu'il crée lui-même le `.env` : le copier à la main avant de l'appeler saute
-cette étape et laisse en place la clé de chiffrement d'exemple.
+`setup.sh` generates secrets only when it creates the `.env` itself: copying the file by hand before running the script
+skips that step and leaves the example encryption key in place.
 
-Le moteur **`mock`** ne demande aucune clé API : il produit des réponses de fixture réalistes dans les deux modes,
-avec mentions et sources. Toute la chaîne — planification, file, exécution, extraction, scoring, agrégation, intervalles,
-replay, export — se démontre donc de bout en bout sans dépenser un centime, avant même d'avoir saisi une clé. Il n'est
-planifié **que tant qu'aucune clé valide n'existe** : ses réponses sont des fixtures, et l'agrégation ne distingue pas
-leur origine, si bien que les planifier à côté d'un vrai moteur reviendrait à publier une médiane et un intervalle de
-confiance qu'aucun fournisseur n'a produits.
+The **`mock`** engine requires no API key: it produces realistic fixture responses in both modes,
+with mentions and sources. The whole pipeline — scheduling, queue, execution, extraction, scoring, aggregation,
+intervals, replay, export — can therefore be demonstrated end to end without spending a cent, before a single key has
+even been entered. It is scheduled **only as long as no valid key exists**: its responses are fixtures, and aggregation
+does not distinguish their origin, so scheduling them alongside a real engine would amount to publishing a median and
+a confidence interval that no provider produced.
 
-Ses fixtures nomment un panel fixe d'éditeurs CRM. Pour voir un tableau de bord peuplé, partez du projet de démonstration
-créé par `SEED_DEMO=true`, dont la marque suivie fait partie de ce panel : un projet dont la marque n'y figure pas produira
-légitimement des scores nuls, ce qui se lit comme une installation cassée alors que la mesure est exacte. Dès qu'une vraie
-clé API est configurée, la question ne se pose plus.
+Its fixtures name a fixed panel of CRM vendors. To see a populated dashboard, start from the demo project
+created by `SEED_DEMO=true`, whose tracked brand belongs to that panel: a project whose brand is not in the panel will
+legitimately produce zero scores, which reads like a broken installation even though the measurement is accurate. As
+soon as a real API key is configured, the issue no longer arises.
 
-## Moteurs supportés
+## Supported engines
 
-| Code | Libellé | Paramétrique | Groundé | Origine des citations | Variable de modèle |
+| Code | Label | Parametric | Grounded | Citation origin | Model variable |
 |---|---|---|---|---|---|
-| `openai` | OpenAI ChatGPT | oui | oui | annotations `url_citation` de l'API Responses (NATIVE), complétées par les URL trouvées dans le texte | `OPENAI_MODEL` |
-| `claude` | Anthropic Claude | oui | oui | blocs `web_search_tool_result` et citations `web_search_result_location` (NATIVE), complétés par les URL du texte | `ANTHROPIC_MODEL` |
-| `gemini` | Google Gemini | oui | oui | `groundingMetadata.groundingChunks` (NATIVE), complétés par les URL du texte | `GEMINI_MODEL` |
-| `perplexity` | Perplexity | non | oui | `search_results` (NATIVE), avec repli sur `citations` quand le champ est absent | `PERPLEXITY_MODEL` |
-| `mock` | Mock (démo) | oui | oui | sources de fixture, marquées NATIVE en mode groundé | aucune |
+| `openai` | OpenAI ChatGPT | yes | yes | `url_citation` annotations from the Responses API (NATIVE), supplemented by URLs found in the text | `OPENAI_MODEL` |
+| `claude` | Anthropic Claude | yes | yes | `web_search_tool_result` blocks and `web_search_result_location` citations (NATIVE), supplemented by URLs from the text | `ANTHROPIC_MODEL` |
+| `gemini` | Google Gemini | yes | yes | `groundingMetadata.groundingChunks` (NATIVE), supplemented by URLs from the text | `GEMINI_MODEL` |
+| `perplexity` | Perplexity | no | yes | `search_results` (NATIVE), falling back to `citations` when that field is absent | `PERPLEXITY_MODEL` |
+| `mock` | Mock (demo) | yes | yes | fixture sources, marked NATIVE in grounded mode | none |
 
-Perplexity interroge toujours le web : le mode paramétrique n'a pas de sens pour ce moteur, et la planification saute la
-cellule au lieu de la faire échouer. Les citations issues des métadonnées natives (`NATIVE`) sont distinguées de celles
-simplement écrites dans la réponse (`INLINE_MARKDOWN`, `BARE_URL`) : un lien tapé de mémoire n'est pas la preuve qu'un
-document a été récupéré. L'origine est portée par chaque citation, tranche les collisions après normalisation en faveur
-de la source native, et reste lisible dans le détail d'un échantillon. Ce que la règle `citation` en fait dépend de la
-version de scoring : `v2` compte toutes les sources retenues, `v3` — la version courante — ne crédite que celles que le
-fournisseur a réellement renvoyées. Le changement de barème a pris la forme d'un nouveau fichier de version enregistré
-dans le registre, jamais d'une retouche du précédent : c'est ce qui laisse un score persisté sous `v2` reproductible
-sous `v2`.
+Perplexity always queries the web: parametric mode is meaningless for this engine, and scheduling skips the
+cell instead of failing it. Citations taken from native metadata (`NATIVE`) are distinguished from those
+merely written in the response (`INLINE_MARKDOWN`, `BARE_URL`): a link typed from memory is not proof that a
+document was retrieved. The origin is carried by each citation, resolves collisions after normalization in favor
+of the native source, and remains visible in a sample's detail view. What the `citation` rule does with it depends
+on the scoring version: `v2` counts all retained sources, while `v3` — the current version — credits only those the
+provider actually returned. The scoring change took the form of a new version file registered in the registry,
+never an edit to the previous one: that is what keeps a score persisted under `v2` reproducible
+under `v2`.
 
-**Les identifiants de modèle sont de la configuration, jamais du code.** Chaque fournisseur retire ses modèles à son
-propre rythme, et un identifiant codé en dur devient une panne silencieuse le jour où il est retiré. Les valeurs par défaut
-vivent dans [`.env.example`](.env.example), sont surchargeables par variable d'environnement, et le worker journalise
-les modèles résolus à son démarrage.
+**Model identifiers are configuration, never code.** Each provider retires its models on its own
+schedule, and a hard-coded identifier becomes a silent failure the day it is retired. Defaults
+live in [`.env.example`](.env.example), can be overridden through environment variables, and the worker logs
+the resolved models at startup.
 
-## Le modèle de score
+## The scoring model
 
-Le score d'un échantillon vaut 0 à 100 et se lit comme la somme de ses règles.
+A sample's score ranges from 0 to 100 and reads as the sum of its rules.
 
-| Règle | Poids | Ce qu'elle mesure |
+| Rule | Weight | What it measures |
 |---|---|---|
-| `presence` | 35 | la marque apparaît, pondérée par la qualité de la correspondance (exacte, alias, domaine, approximative) |
-| `prominence` | 15 | position de la première mention dans le texte et rang d'apparition parmi toutes les entités |
-| `frequency` | 10 | nombre d'occurrences, saturé logarithmiquement |
-| `shareOfVoice` | 20 | occurrences de la marque contre celles des concurrents, lissées |
-| `citation` | 15 | sources du domaine de la marque parmi celles retenues, ou parmi les seules sources natives selon la version de scoring |
-| `sentiment` | signé, plancher −10 | tonalité majoritaire des passages citant la marque |
-| `competitorLead` | signé, plancher −8 | concurrents nommés avant la marque, rapportés au nombre de concurrents mentionnés |
+| `presence` | 35 | the brand appears, weighted by match quality (exact, alias, domain, fuzzy) |
+| `prominence` | 15 | position of the first mention in the text and order of appearance among all entities |
+| `frequency` | 10 | number of occurrences, logarithmically saturated |
+| `shareOfVoice` | 20 | brand occurrences versus competitor occurrences, smoothed |
+| `citation` | 15 | sources from the brand's domain among the retained sources, or among native sources only, depending on the scoring version |
+| `sentiment` | signed, floor −10 | majority tone of the passages mentioning the brand |
+| `competitorLead` | signed, floor −8 | competitors named before the brand, relative to the number of competitors mentioned |
 
-La règle `citation` a besoin que quelque chose ait été récupéré. En mode paramétrique, rien ne l'est par construction ;
-en mode groundé, une réponse sans aucune source renseigne sur le fournisseur, pas sur la marque. Lui attribuer 0 sur 15
-dans ces deux cas plafonnerait mécaniquement l'axe paramétrique à 85 et rendrait les deux axes incomparables — l'écart de
-récupération ne mesurerait plus qu'un artefact de barème. Le budget de la règle est donc **redistribué** aux quatre règles
-positives qui restent applicables (`presence`, `prominence`, `frequency`, `shareOfVoice`), au prorata de leurs poids :
-chacune est multipliée par 95/80, et la contribution porte le drapeau `redistributed` pour que la décomposition reste
-lisible. Les deux axes s'expriment ainsi sur la même échelle et leur différence garde un sens.
+The `citation` rule requires that something was retrieved. In parametric mode, nothing is, by construction;
+in grounded mode, a response with no sources at all says something about the provider, not about the brand. Scoring
+it 0 out of 15 in both cases would mechanically cap the parametric axis at 85 and make the two axes incomparable — the
+retrieval gap would measure nothing more than a scoring artifact. The rule's budget is therefore **redistributed** to
+the four positive rules that remain applicable (`presence`, `prominence`, `frequency`, `shareOfVoice`), in proportion
+to their weights: each is multiplied by 95/80, and the contribution carries the `redistributed` flag so that the
+breakdown stays readable. Both axes are thus expressed on the same scale, and their difference remains meaningful.
 
-Une version de scoring publiée n'est jamais modifiée : tout changement de comportement est un nouveau fichier de version.
-C'est la seule garantie qui rend un score persisté reproductible, et donc un replay comparable.
+A published scoring version is never modified: any change in behavior is a new version file.
+This is the only guarantee that makes a persisted score reproducible, and therefore a replay comparable.
 
-## Sécurité
+## Security
 
-- Les clés API des fournisseurs sont **chiffrées au repos en AES-256-GCM**, avec la paire propriétaire
-  `(userId, providerId)` authentifiée en AAD : un chiffré recopié sur la ligne d'un autre utilisateur échoue au
-  déchiffrement au lieu de lui livrer une clé payante.
-- **Rotation par version** : chaque ligne enregistre la version de clé qui l'a écrite et le déchiffrement cherche cette
-  version-là. Ajouter une version et déplacer `CREDENTIAL_KEY_CURRENT` suffit ; les lignes existantes restent lisibles.
-- **Aucune route ne renvoie une clé en clair** — les réponses ne portent qu'un masque à quatre caractères et une empreinte
-  HMAC poivrée sert à reconnaître un doublon sans rien déchiffrer.
-- **Contrôle de propriété sur chaque route** : toute ressource de projet passe par un helper unique qui vérifie la session
-  puis l'appartenance, et les identifiants enfants sont recherchés avec leur `projectId` pour qu'un identifiant valide
-  d'un autre projet reste introuvable.
-- **Limitation de débit** sur l'inscription, sur le lancement d'analyses et sur chaque fournisseur, via un seau à jetons
-  persisté en base et donc partagé entre tous les processus. L'inscription est bornée deux fois : un seau global, débité
-  en premier, et un seau par adresse qui n'existe que si `TRUSTED_PROXY_HOPS` rend l'adresse connaissable — un client
-  capable d'écrire son propre `X-Forwarded-For` se frapperait sinon un seau neuf à chaque requête.
-- **CSP stricte et en-têtes de sécurité** : la politique est émise par requête depuis `src/proxy.ts`, avec un nonce et
-  `strict-dynamic` — sans nonce, le bootstrap inline du App Router serait refusé et les pages resteraient non hydratées.
-  `default-src 'self'`, `connect-src 'self'` (le navigateur ne parle jamais à une API fournisseur),
-  `frame-ancestors 'none'`, `object-src 'none'`. Les en-têtes indépendants de la requête — `nosniff`, `X-Frame-Options`,
-  `Referrer-Policy`, HSTS en production — viennent de `next.config.mjs`.
-- **Injection de formule neutralisée à l'export CSV** : les noms de concurrents et les URL viennent de sorties de modèles,
-  et toute cellule commençant par `=`, `+`, `-`, `@`, une tabulation ou un retour chariot est désamorcée avant d'être citée.
-- L'application **refuse de démarrer en production** avec les secrets d'exemple.
+- Provider API keys are **encrypted at rest with AES-256-GCM**, with the owner pair
+  `(userId, providerId)` authenticated as AAD: a ciphertext copied onto another user's row fails
+  decryption instead of handing that user a paid key.
+- **Versioned rotation**: each row records the key version that wrote it, and decryption looks up that
+  specific version. Adding a version and moving `CREDENTIAL_KEY_CURRENT` is sufficient; existing rows remain readable.
+- **No route returns a key in plaintext** — responses carry only a four-character mask, and a peppered HMAC
+  fingerprint is used to detect duplicates without decrypting anything.
+- **Ownership check on every route**: every project resource goes through a single helper that verifies the session
+  and then ownership, and child identifiers are looked up together with their `projectId` so that a valid identifier
+  from another project cannot be found.
+- **Rate limiting** on sign-up, on analysis launches, and on each provider, via a token bucket
+  persisted in the database and therefore shared across all processes. Sign-up is limited twice: by a global bucket,
+  debited first, and by a per-address bucket that exists only when `TRUSTED_PROXY_HOPS` makes the address knowable —
+  otherwise a client able to write its own `X-Forwarded-For` would mint itself a fresh bucket on every request.
+- **Strict CSP and security headers**: the policy is emitted per request from `src/proxy.ts`, with a nonce and
+  `strict-dynamic` — without a nonce, the App Router's inline bootstrap would be blocked and pages would remain
+  unhydrated. `default-src 'self'`, `connect-src 'self'` (the browser never talks to a provider API),
+  `frame-ancestors 'none'`, `object-src 'none'`. Request-independent headers — `nosniff`, `X-Frame-Options`,
+  `Referrer-Policy`, HSTS in production — come from `next.config.mjs`.
+- **Formula injection neutralized in CSV export**: competitor names and URLs come from model outputs,
+  and any cell starting with `=`, `+`, `-`, `@`, a tab, or a carriage return is defused before being quoted.
+- The application **refuses to start in production** with the example secrets.
 
-Détail du modèle de menace et procédure de signalement : [SECURITY.md](SECURITY.md).
+Threat model details and reporting procedure: [SECURITY.md](SECURITY.md).
 
 ## Stack
 
-Next.js 16 (App Router) · React 19 · TypeScript strict · PostgreSQL 16 · Prisma 5 · NextAuth 4 · Tailwind CSS · Recharts ·
-Vitest · Docker Compose. Aucune dépendance de file d'attente externe : la durabilité vient de Postgres.
+Next.js 16 (App Router) · React 19 · strict TypeScript · PostgreSQL 16 · Prisma 5 · NextAuth 4 · Tailwind CSS · Recharts ·
+Vitest · Docker Compose. No external queue dependency: durability comes from Postgres.
 
-## Arborescence
+## Project structure
 
 ```
 src/
-  app/(auth)/        pages de connexion et d'inscription
-  app/(dashboard)/   vues projet : synthèse, requêtes, sources, analyses, configuration
-  app/api/           routes REST, une par ressource
-  components/        primitives d'interface et composants de restitution des scores
-  lib/api/           authentification, contrôle de propriété, validation, forme des erreurs
-  lib/crypto/        chiffrement enveloppe des clés fournisseurs
-  lib/parsing/       versions d'extraction : mentions, offsets, citations, normalisation d'URL
-  lib/providers/     contrat AIProvider et une implémentation par moteur
-  lib/queue/         file durable, seau à jetons, balayeur de reprise
-  lib/runs/          planification d'un run, extraction et scoring d'un échantillon
-  lib/scoring/       versions de scoring, statistiques, agrégation, replay
-  lib/sentiment/     juge de sentiment adressé par contenu
-  types/             contrat d'API partagé par les routes et les pages
-  worker/            boucle du worker, arrêt gracieux, handlers de jobs
+  app/(auth)/        sign-in and sign-up pages
+  app/(dashboard)/   project views: summary, queries, sources, analyses, configuration
+  app/api/           REST routes, one per resource
+  components/        UI primitives and score presentation components
+  lib/api/           authentication, ownership checks, validation, error shape
+  lib/crypto/        envelope encryption of provider keys
+  lib/parsing/       extraction versions: mentions, offsets, citations, URL normalization
+  lib/providers/     AIProvider contract and one implementation per engine
+  lib/queue/         durable queue, token bucket, recovery sweeper
+  lib/runs/          run planning, sample extraction and scoring
+  lib/scoring/       scoring versions, statistics, aggregation, replay
+  lib/sentiment/     content-addressed sentiment judge
+  types/             API contract shared by routes and pages
+  worker/            worker loop, graceful shutdown, job handlers
 ```
 
 ## Scripts
 
-| Commande | Effet |
+| Command | Effect |
 |---|---|
-| `npm run dev` | application web en développement |
-| `npm run worker` | exécuteur d'analyses ; sans lui les runs restent en attente |
-| `npm run build` | build de production |
-| `npm run test` | suite Vitest |
-| `npm run test:coverage` | même suite, avec la couverture — c'est la forme qu'exécute la CI |
+| `npm run dev` | web application in development mode |
+| `npm run worker` | analysis runner; without it, runs stay pending |
+| `npm run build` | production build |
+| `npm run test` | Vitest suite |
+| `npm run test:coverage` | same suite, with coverage — this is the form CI runs |
 | `npm run typecheck` | `tsc --noEmit` |
-| `npm run lint` | ESLint via la configuration Next |
-| `npm run db:migrate` | crée et applique une migration en développement |
-| `npm run db:deploy` | applique les migrations existantes ; en production, suivre le runbook avec les anciens web et workers arrêtés |
-| `npm run db:seed` | moteurs et seaux de débit ; sous `NODE_ENV=production`, préserve les réglages existants sans démo ; `SEED_DEMO=true` est réservé au développement |
-| `npm run keygen` | génère secret de session, clés de chiffrement et pepper d'empreinte |
+| `npm run lint` | ESLint via the Next configuration |
+| `npm run db:migrate` | creates and applies a migration in development |
+| `npm run db:deploy` | applies existing migrations; in production, follow the runbook with the old web and worker processes stopped |
+| `npm run db:seed` | engines and rate-limit buckets; under `NODE_ENV=production`, preserves existing settings without demo data; `SEED_DEMO=true` is reserved for development |
+| `npm run keygen` | generates the session secret, encryption keys, and fingerprint pepper |
 
 ## Documentation
 
 | | |
 |---|---|
-| [02 — Installation](docs/02-installation.md#installer-sa-propre-instance) | commencer ici : votre instance auto-hébergée, accès privé et configuration |
-| [Runbook de production](docs/production-runbook.md) | première installation, mises à niveau, santé, sauvegarde et reprise |
-| [Méthodologie de mesure](docs/measurement-methodology.md) | groupes de requêtes, delta apparié, sentiment par contexte, historique et limites |
-| [01 — Architecture](docs/01-architecture.md) | chemin d'une requête, file, boucle du worker, reprise, annulation |
-| [03 — Base de données](docs/03-database.md) | grain Run → RunTask → RunSample, évidence et distributions |
-| [04 — Référence API](docs/04-api-reference.md) | chaque route, son corps et sa réponse |
-| [05 — Moteurs](docs/05-providers.md) | contrat `AIProvider`, les deux modes, ajout d'un moteur |
-| [06 — Mesure](docs/06-measurement.md) | extraction, règles de score, statistiques, replay |
-| [07 — Pipeline](docs/07-pipeline.md) | cycle de vie d'un job, machine à états d'un run |
-| [08 — Dashboard](docs/08-dashboard.md) | ce que montre chaque vue et comment la lire |
-| [09 — Guide utilisateur](docs/09-user-guide.md) | parcours complet, du projet vide au diagnostic |
+| [02 — Installation](docs/02-installation.md#installer-sa-propre-instance) | start here: your self-hosted instance, private access, and configuration |
+| [Production runbook](docs/production-runbook.md) | first installation, upgrades, health, backup, and recovery |
+| [Measurement methodology](docs/measurement-methodology.md) | query clusters, paired delta, per-context sentiment, history, and limits |
+| [01 — Architecture](docs/01-architecture.md) | path of a request, queue, worker loop, recovery, cancellation |
+| [03 — Database](docs/03-database.md) | Run → RunTask → RunSample grain, evidence, and distributions |
+| [04 — API reference](docs/04-api-reference.md) | every route, its body, and its response |
+| [05 — Engines](docs/05-providers.md) | `AIProvider` contract, the two modes, adding an engine |
+| [06 — Measurement](docs/06-measurement.md) | extraction, scoring rules, statistics, replay |
+| [07 — Pipeline](docs/07-pipeline.md) | job lifecycle, run state machine |
+| [08 — Dashboard](docs/08-dashboard.md) | what each view shows and how to read it |
+| [09 — User guide](docs/09-user-guide.md) | complete walkthrough, from empty project to diagnosis |
 
-Contribuer : [CONTRIBUTING.md](CONTRIBUTING.md).
+Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Licence
+## License
 
-MIT — voir [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
 
-## Marques
+## Trademarks
 
-Les noms et logos des moteurs cités appartiennent à leurs propriétaires respectifs. Leur présence indique une prise en
-charge technique de l'intégration, et ne constitue ni une approbation, ni un partenariat, ni une affiliation.
+The names and logos of the engines mentioned belong to their respective owners. Their presence indicates technical
+support for the integration and does not constitute endorsement, partnership, or affiliation.
