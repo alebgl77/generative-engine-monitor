@@ -10,7 +10,7 @@ if [ ! -f .env ]; then
   cp .env.example .env
 
   echo "Installing dependencies..."
-  npm install --silent
+  npm ci --silent
 
   echo "Generating secrets..."
   npx tsx scripts/keygen.ts --write
@@ -22,7 +22,7 @@ if [ ! -f .env ]; then
 fi
 
 echo "Installing dependencies..."
-npm install
+npm ci
 
 echo "Generating Prisma client..."
 npx prisma generate

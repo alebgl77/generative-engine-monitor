@@ -7,7 +7,7 @@ Chaque utilisateur installe et exploite sa propre instance **auto-hébergée**, 
 Prérequis pour la pile de production :
 
 - Votre machine ou votre serveur, avec Docker et Docker Compose v2 prenant en charge `up --wait` et `--wait-timeout`. PostgreSQL 16 est fourni par la pile et son port n'est pas publié sur l'hôte.
-- **Node 22 et npm sur la machine de préparation**, avec les dépendances verrouillées installées par `npm ci`, pour utiliser le [générateur de secrets existant](#secrets). Les images utilisent aussi Node 22, mais n'embarquent pas ce script : cette préparation n'est pas Docker-only.
+- **Node 22.23.4 et npm sur la machine de préparation**, avec les dépendances verrouillées installées par `npm ci`, pour utiliser le [générateur de secrets existant](#secrets). Les images utilisent aussi Node 22, mais n'embarquent pas ce script : cette préparation n'est pas Docker-only.
 - Un accès privé à la machine : navigateur local ou SSH. Aucun domaine n'est nécessaire pour rester en boucle locale ; tout accès réseau direct, y compris sur un LAN, nécessite un HTTPS géré par l'exploitant.
 
 Parcours d'une **nouvelle installation** :
@@ -19,13 +19,13 @@ Parcours d'une **nouvelle installation** :
 5. Créez votre compte avec la [séquence privée de contrôle des inscriptions](access-control.md#créer-le-premier-compte-avant-toute-exposition-publique), puis refermez et vérifiez le refus `403`. Aucun compte ni mot de passe n'est fourni ; `setup.sh` et le seed de démonstration ne font pas partie de cette installation.
 6. Vous pouvez conserver cet accès privé. Si vous choisissez une exposition réseau, configurez ensuite [HTTPS, l'URL finale et la confiance proxy](production-runbook.md#access-mode-and-https), en gardant les inscriptions fermées.
 
-Vous êtes responsable des mises à jour, sauvegardes, restaurations et secrets de votre instance. Les requêtes et contenus nécessaires aux analyses sont envoyés aux API des fournisseurs sélectionnés ; les appels sont facturés sur vos comptes fournisseurs. Les limites de volume ne sont **pas** des budgets monétaires. La qualification Docker réelle n’a pas été exécutée sur l’environnement Windows local. Pour ce commit, le job GitHub Actions Ubuntu `containers` qualifie toutefois les trois images, Compose, le migrateur et sa gate, la readiness web, la santé du worker, l’exécution non-root et le parcours HTTP mocké. Restent hors qualification les fournisseurs, credentials et facturations réels, la charge et les P99, le multi-réplica et le drain, la restauration et le PITR, le TLS/proxy de production ainsi que la validité scientifique externe ; voir la [limite de validation](production-runbook.md#validation-boundary-and-external-work).
+Vous êtes responsable des mises à jour, sauvegardes, restaurations et secrets de votre instance. Les requêtes et contenus nécessaires aux analyses sont envoyés aux API des fournisseurs sélectionnés ; les appels sont facturés sur vos comptes fournisseurs. Les limites de volume ne sont **pas** des budgets monétaires. Le job GitHub Actions Ubuntu `containers` vérifie les trois images, Compose, le migrateur et sa gate, la readiness web, la santé du worker, l'exécution non-root et le parcours HTTP mocké. Consultez le run de la révision exacte et [l'état du projet](project-status.md) pour connaître les validations acquises. Restent hors qualification les fournisseurs, credentials et facturations réels, la charge et les P99, le multi-réplica et le drain, la restauration et le PITR, le TLS/proxy de production ainsi que la validité scientifique externe ; voir la [limite de validation](production-runbook.md#validation-boundary-and-external-work).
 
 ## Développement et démonstration
 
 Les voies ci-dessous utilisent `.env.example` et une base isolée, pas la configuration de votre instance de production. Prérequis :
 
-- Node ≥ 20.11
+- Node 22.23.4 (voir `.nvmrc`) ou Node 24.19+ LTS
 - PostgreSQL 16
 - Docker et Docker Compose, pour la voie conteneurisée
 
@@ -99,7 +99,7 @@ Les identifiants de modèle sont de la configuration, pas du code : les fourniss
 
 ### Secrets
 
-Sur la machine de préparation avec Node 22, installez les dépendances verrouillées avant de lancer le générateur :
+Sur la machine de préparation avec Node 22.23.4, installez les dépendances verrouillées avant de lancer le générateur :
 
 ```bash
 npm ci
@@ -153,7 +153,7 @@ Le Dockerfile produit trois cibles exécutées sous l'UID non root 1001 : `web` 
 
 `.github/workflows/ci.yml` démarre un PostgreSQL 16 en service, applique les migrations et le seed, puis exécute `lint`, `typecheck`, la couverture Vitest, le build standalone, le smoke HTTP mock et l'audit des dépendances. Un job Docker distinct construit les trois cibles et appelle `scripts/container-smoke.sh` : pile jetable, santé web/worker, UID non root, smoke HTTP mock et refus de démarrage après une migration en échec. Les volumes supprimés appartiennent uniquement aux projets de test générés ; les logs d'échec sont conservés sept jours en artefact CI. Aucun push d'image ni déploiement n'est exécuté.
 
-La qualification réelle des conteneurs **n'a pas été exécutée sur l'environnement Windows local**, où Docker n'est pas disponible. Pour ce commit, le job GitHub Actions Ubuntu `containers` a exécuté avec succès les constructions et contrôles Docker décrits ci-dessus. Cette preuve ne couvre pas les fournisseurs réels, la charge, l’exploitation multi-réplica, la reprise des données, la terminaison TLS ni la validité scientifique externe.
+Un résultat vert du job `containers` qualifie les constructions et contrôles Docker décrits ci-dessus pour sa révision uniquement. Consultez [l'état du projet](project-status.md) et le run correspondant à votre checkout. Cette preuve ne couvre pas les fournisseurs réels, la charge, l’exploitation multi-réplica, la reprise des données, la terminaison TLS ni la validité scientifique externe.
 
 ## Vérifier le développement et la démonstration
 
