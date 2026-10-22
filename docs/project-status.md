@@ -40,16 +40,20 @@ upstream dependency ranges accept a corrected version, after repeating the build
 
 ### Remaining upstream issue
 
-The full audit still reports **seven high-severity dependency entries** from one
+The local maintenance audit reported **seven high-severity dependency entries**.
+The subsequent [CI audit on 22 October 2026](https://github.com/alebgl77/generative-engine-monitor/actions/runs/39750168004/job/119728449698)
+reported **eight high-severity dependency entries**, also counting
+`tailwindcss-animate` in the transitive chain. Both reports concern the same
 unresolved advisory, [GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm),
-in `braces` 3.0.3 and its build/lint dependants. GitHub lists **no patched version**
-as of this review. Both the Tailwind 3 toolchain and Next's ESLint plugin pull this
+in `braces` 3.0.3 and its build/lint dependants; they are not seven or eight
+independent advisories. GitHub lists **no patched version** as of this review.
+Both the Tailwind 3 toolchain and Next's ESLint plugin pull this
 dependency through their glob tooling. Updating Tailwind alone does not remove
 the other path. An automatic forced audit fix proposes incompatible package
 changes and is not a reviewed remediation.
 
-`npm audit --omit=dev` reports **zero advisories** for the production dependency
-graph at this review. That narrower result does not qualify container images or
+The local `npm audit --omit=dev` reported **zero advisories** for the production
+dependency graph. That narrower result does not qualify container images or
 the complete supply chain: build stages and the one-shot migrator still retain
 development dependencies. Do not process untrusted source trees or glob patterns
 with those tools. The absence of a demonstrated application exploit does not
@@ -70,10 +74,39 @@ failed at the dependency audit. That result does not qualify a later commit.
 
 Local maintenance validation on Node 22.23.4 passes lint (with six existing React
 warnings), typecheck, production build, and **553 tests**. **24 database tests are
-skipped**, because no PostgreSQL server is available in that environment. Docker
-qualification and the database-backed HTTP smoke must run in CI on the changed
-revision. No real provider calls, credentials, deployments or migrations against
-an existing instance are part of this maintenance check.
+skipped**, because no PostgreSQL server was available in that environment. Those
+local results alone did not qualify the database integration or container images.
+No real provider calls, credentials, deployments or migrations against an existing
+instance were part of this maintenance check.
+
+### CI qualification of the maintenance revision
+
+[CI run 39750168004](https://github.com/alebgl77/generative-engine-monitor/actions/runs/39750168004)
+for source revision
+[`248858c6406500d22330ac805274525caa12fbcc`](https://github.com/alebgl77/generative-engine-monitor/commit/248858c6406500d22330ac805274525caa12fbcc)
+completed on **22 October 2026 at 08:47:57 UTC**. It tested the pull-request merge
+with base `3a37793404c2d19efe5d22b7caf16f70552c48c2`, using Node **22.23.4**
+and npm **10.9.9** in the verification job.
+
+- The [verification job](https://github.com/alebgl77/generative-engine-monitor/actions/runs/39750168004/job/119728449698)
+  applied all six PostgreSQL migrations, seeded and verified five providers,
+  and passed lint (six existing warnings), typecheck and production build.
+- **577 tests across 38 files passed**, including the 18 PostgreSQL queue tests
+  and six PostgreSQL plan/reservation tests that were skipped locally.
+- The production HTTP smoke passed: health endpoints, anonymous rejection,
+  authenticated session, immutable mock run, archived catalog, dashboard/exports,
+  nullable confidence intervals and **v3 → v2 → v3** replay/promotion with unchanged
+  stored responses and original scores.
+- The [container job](https://github.com/alebgl77/generative-engine-monitor/actions/runs/39750168004/job/119728449379)
+  passed qualification of all three images, migrator completion, readiness,
+  worker health, non-root runtime, mock HTTP workflow and refusal to start after
+  a failed migration.
+
+The only failing step was the unchanged full dependency audit: **eight high-severity
+entries from the single `braces` advisory above**. The overall run is therefore
+**failed**, despite the successful functional and container checks. These results
+qualify the stated revision and mock workflow, not later commits or real-provider
+production behavior.
 
 For each revision, use the [CI runs](https://github.com/alebgl77/generative-engine-monitor/actions/workflows/ci.yml)
 to verify the complete database and container jobs. Runtime dependency audit,
