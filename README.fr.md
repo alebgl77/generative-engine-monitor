@@ -2,12 +2,16 @@
 
 [English](README.md) · **Français**
 
+[État du projet et validation](docs/project-status.md) · [CI](https://github.com/alebgl77/generative-engine-monitor/actions/workflows/ci.yml)
+
 Un observatoire self-hosted de la visibilité générative, fondé sur les réponses réellement observées via les API des fournisseurs.
 
 ![Vue bureau de la chambre des signaux](docs/screenshots/signal-room.png)
 
 Generative Engine Monitor rapporte les médianes, les intervalles de confiance et la décomposition de chaque score.
 Les analyses peuvent être rejouées à partir des réponses conservées, sans masquer la taille de l'échantillon ni la méthode employée.
+Le rejeu évite de racheter les mêmes réponses ; de nouveaux jugements de sentiment peuvent cependant être facturés.
+Ces mesures portent sur les réponses des API enregistrées, pas sur les interfaces publiques personnalisées de ces services.
 
 L'application est distribuée pour être **auto-hébergée** : chaque utilisateur installe et exploite sa propre instance,
 sur sa machine ou son serveur, avec sa base et ses secrets. Il ne s'agit pas d'un SaaS centralisé. Aucune télémétrie
@@ -22,7 +26,7 @@ publiques. Les clés fournisseurs sont chiffrées au repos.
 
 ```bash
 cp .env.example .env
-npm install             # `keygen` s'exécute par tsx, livré avec les dépendances
+npm ci                  # `keygen` s'exécute par tsx, livré avec les dépendances
 npm run keygen          # génère NEXTAUTH_SECRET, CREDENTIAL_KEYS et le pepper — à coller dans .env
 docker compose up
 ```
@@ -36,12 +40,13 @@ jour et conservation des secrets restent à votre charge.
 
 Pour une mise en production, suivez le [runbook](docs/production-runbook.md) : arrêtez les anciens processus web et workers
 avant la migration, sans déploiement progressif mêlant deux versions. Préparez vos secrets avec
-`.env.production.example` ; ne réutilisez ni `.env.example` ni les données de démonstration. La qualification Docker réelle
-n’a pas été exécutée sur l’environnement Windows local. Pour ce commit, le job GitHub Actions Ubuntu `containers` qualifie
-cependant les trois images, Compose, le migrateur et sa gate, la readiness web, la santé du worker, l’exécution non-root
-et le parcours HTTP mocké. Restent hors qualification les fournisseurs, credentials et facturations réels, la charge et
-les P99, le multi-réplica et le drain, la restauration et le PITR, le TLS/proxy de production ainsi que la validité
-scientifique externe ; voir la [limite de validation](docs/production-runbook.md#validation-boundary-and-external-work).
+`.env.production.example` ; ne réutilisez ni `.env.example` ni les données de démonstration. Le job GitHub Actions Ubuntu
+`containers` vérifie les trois images, Compose, la gate du migrateur, la readiness web, la santé du worker,
+l'exécution non-root et un parcours HTTP avec le fournisseur mock. Consultez le run de la révision exacte
+que vous comptez utiliser ; [l'état du projet](docs/project-status.md) distingue les preuves disponibles
+des contrôles à exécuter. Ce job ne qualifie pas les fournisseurs, identifiants et facturations réels,
+la charge et les P99, le multi-réplica et le drain, la restauration et le PITR, le TLS/proxy de production
+ni la validité scientifique externe ; voir la [limite de validation](docs/production-runbook.md#validation-boundary-and-external-work).
 
 Les appels vers de vrais moteurs utilisent vos comptes fournisseurs, transmettent le contenu demandé à leurs API et
 peuvent entraîner des frais. Les limites de volume de l'application ne constituent pas un plafond monétaire.
@@ -80,13 +85,13 @@ qui ramène tout cela à un chiffre unique par requête mesure surtout son propr
 
 ### Deux axes, jamais mélangés
 
-Chaque requête est posée deux fois : en mode **PARAMETRIC**, tous les outils de recherche désactivés — ce que le modèle
-a retenu de son entraînement — et en mode **GROUNDED**, la recherche web native du fournisseur activée — ce qu'il va
-chercher au moment de répondre. Les deux médianes sont rapportées côte à côte et jamais moyennées, car leur différence
-est l'unique diagnostic actionnable qu'elles portent ensemble. Un **écart de récupération** positif signifie que la
-recherche vous sert et que l'investissement utile est le contenu que les moteurs iront chercher ; un écart négatif
-signifie que les modèles vous connaissent mais cessent de vous citer dès qu'ils consultent leurs sources,
-et l'investissement utile devient ces sources-là.
+Chaque paire requête/fournisseur compatible est interrogée en mode **PARAMETRIC**, avec les outils de recherche
+désactivés, et en mode **GROUNDED**, avec la recherche web native du fournisseur activée. Ces paramètres
+décrivent la requête API ; ils ne révèlent pas ce que le modèle a mémorisé pendant son entraînement.
+Les deux résumés restent séparés. L'écart de récupération compare les mêmes cellules requête/fournisseur
+entre modes et peut orienter l'examen des sources récupérées. Il ne démontre pas un effet causal de la recherche
+et ne prédit pas quel investissement éditorial réussira. Examinez la taille du support, le panel de fournisseurs
+et l'incertitude avant d'agir ; voir la [méthodologie de mesure](docs/measurement-methodology.md).
 
 ### Des intervalles, jamais un chiffre sec
 
@@ -111,7 +116,8 @@ avec sa progression, ses reprises et son annulation ; ses conditions sont décri
 
 ## Architecture
 
-L'application Next.js ne fait jamais d'appel fournisseur dans le cycle d'une requête HTTP. Lancer une analyse
+L'exécution d'une analyse a lieu hors du cycle d'une requête HTTP ; la validation des identifiants conserve
+un appel fournisseur borné dans sa propre route. Lancer une analyse
 **matérialise le plan entier** — un `Run`, ses `RunTask` (une par cellule), ses `RunSample` (un par appel payant) et les
 jobs correspondants — dans une seule transaction PostgreSQL, puis répond `202`. L'exécution appartient à un ou plusieurs
 processus **worker** séparés qui drainent une file durable adossée à Postgres : réclamation par
@@ -119,7 +125,8 @@ processus **worker** séparés qui drainent une file durable adossée à Postgre
 (un worker tué rend ses jobs au balayeur au lieu de les immobiliser), seau à jetons partagé en base (la limite qui compte
 est celle du fournisseur, pas celle d'un conteneur). La progression est portée par des compteurs décrémentés dans la
 transaction qui écrit le résultat : `pendingSamples` à zéro déclenche l'agrégation de la tâche, `pendingTasks` à zéro
-celle du run. Rien ne fait de polling, et le conteneur web peut redémarrer en plein run sans perdre de travail.
+celle du run. L'agrégation est déclenchée par ces compteurs persistés ; les workers interrogent la file durable.
+Le conteneur web peut redémarrer en plein run sans perdre les travaux en attente.
 
 ## Développement et démonstration
 
@@ -127,7 +134,7 @@ Les commandes ci-dessous sont réservées au **développement sur une base isol�
 
 ### Local
 
-Prérequis : Node ≥ 20.11 et PostgreSQL 16.
+Prérequis : Node 22.23.4 (voir `.nvmrc`) ou Node 24.19+ LTS et PostgreSQL 16.
 
 ```bash
 ./setup.sh              # crée .env, installe les dépendances, génère les secrets, s'arrête

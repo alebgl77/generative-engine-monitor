@@ -53,7 +53,7 @@ your secret manager. Do not overwrite an existing configuration or use
 `.env.example` development credentials.
 
 Generate an independent high-entropy database password. On the preparation host,
-Node 22 and the locked dependencies (`npm ci`) are needed for `npm run keygen`.
+Node 22.23.4 (see `.nvmrc`) and the locked dependencies (`npm ci`) are needed for `npm run keygen`.
 It prints the session secret, credential encryption keyring, current key version
 and fingerprint pepper: copy them into the new instance's protected
 `.env.production` as described under [secrets](02-installation.md#secrets).
@@ -198,8 +198,8 @@ allow up to 120 seconds for the services to become healthy before the probes;
 on failure, the block attempts to stop web/worker and exits nonzero, without
 stopping PostgreSQL or changing volumes. If automatic stop fails, manually stop
 and verify every writer while keeping access closed; shutdown is not guaranteed
-by the failed command. This documented wait does not establish real Docker
-qualification, which remains unexecuted.
+by the failed command. These commands are operator instructions, not evidence that they passed on your deployment.
+Use the exact revision's container CI result and the [validation record](project-status.md).
 
 Adjust the HTTP port to `APP_PORT`. For multiple workers inspect each container's
 health, not just the first replica. For a first installation, now complete the
@@ -333,14 +333,11 @@ image push, production secrets or paid-provider calls are used. This follows
 [Docker's test-before-push guidance](https://docs.docker.com/build/ci/github-actions/test-before-push/),
 without the push step.
 
-**Actual local container qualification has not been executed.** Docker CLI is
-unavailable in the current Windows environment and the Docker Desktop WSL distro
-is stopped; no engine was installed or started. Shell parsing and mocked script
-control-flow checks do not qualify Linux/Alpine image builds, Prisma native engines
-or Compose behavior. Require a successful Docker CI job before claiming those
-checks pass. Restart/drain signals still need a dedicated operational drill.
-Local PostgreSQL checks do not establish container validation, PITR, load/P99,
-production readiness SLOs or real-provider behavior. Remaining operator work includes HTTPS/proxy configuration
-for network exposure (no domain is required for loopback/SSH-only use), secret
-provisioning, restricted network access, backup/PITR scheduling and restore drills,
+A successful `containers` run qualifies only the revision and disposable Linux environment that ran it.
+See the [project status and validation record](project-status.md) before relying on a checkout. Local
+unit tests and a successful application build do not substitute for Docker qualification. Restart/drain
+signals still need a dedicated operational drill. Local PostgreSQL checks do not establish PITR,
+load/P99, production readiness SLOs or real-provider behavior. Remaining operator work includes
+HTTPS/proxy configuration for network exposure (no domain is required for loopback/SSH-only use),
+secret provisioning, restricted network access, backup/PITR scheduling and restore drills,
 monitoring/alert delivery, capacity/load tests and an authorized deployment.

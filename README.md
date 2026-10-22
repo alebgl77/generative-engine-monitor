@@ -5,12 +5,16 @@
 Most detailed documentation under [docs/](docs/) is currently written in French; the production runbook and the
 measurement methodology are in English.
 
+[Project status and validation](docs/project-status.md) · [CI](https://github.com/alebgl77/generative-engine-monitor/actions/workflows/ci.yml)
+
 A self-hosted observatory for generative visibility, based on the responses actually observed through provider APIs.
 
 ![Desktop view of the signal room](docs/screenshots/signal-room.png)
 
 Generative Engine Monitor reports medians, confidence intervals, and the breakdown of every score.
 Analyses can be replayed from the stored responses, without hiding the sample size or the method used.
+Replay avoids buying the same answers again; optional new sentiment judgments can still incur provider charges.
+These measurements concern recorded API responses, not the personalized public interfaces of those services.
 
 The application is distributed to be **self-hosted**: each user installs and operates their own instance,
 on their own machine or server, with their own database and secrets. It is not a centralized SaaS. No telemetry
@@ -25,7 +29,7 @@ public. Provider keys are encrypted at rest.
 
 ```bash
 cp .env.example .env
-npm install             # `keygen` runs via tsx, which ships with the dependencies
+npm ci                  # `keygen` runs via tsx, which ships with the dependencies
 npm run keygen          # generates NEXTAUTH_SECRET, CREDENTIAL_KEYS and the pepper — paste them into .env
 docker compose up
 ```
@@ -39,12 +43,13 @@ updates, and secret retention remain your responsibility.
 
 For a production deployment, follow the [runbook](docs/production-runbook.md): stop the old web and worker processes
 before migrating, with no rolling deployment mixing two versions. Prepare your secrets from
-`.env.production.example`; do not reuse `.env.example` or the demo data. Actual Docker qualification has not been run
-in the local Windows environment. For this commit, however, the Ubuntu GitHub Actions `containers` job qualifies
-the three images, Compose, the migrator and its gate, web readiness, worker health, non-root execution, and the mocked
-HTTP flow. The following remain outside the qualification scope: real providers, credentials, and billing; load and
-P99 latency; multi-replica operation and draining; restore and PITR; production TLS/proxy; and external scientific
-validity; see the [validation boundary](docs/production-runbook.md#validation-boundary-and-external-work).
+`.env.production.example`; do not reuse `.env.example` or the demo data. The Ubuntu GitHub Actions
+`containers` job checks the three images, Compose, the migrator gate, web readiness, worker health,
+non-root execution and a mock-only HTTP flow. Check the run for the exact revision you intend to use;
+[project status](docs/project-status.md) separates recorded evidence from pending checks. Real providers,
+credentials and billing; load and P99 latency; multi-replica operation and draining; restore and PITR;
+production TLS/proxy; and external scientific validity remain outside that job's qualification scope.
+See the [validation boundary](docs/production-runbook.md#validation-boundary-and-external-work).
 
 Calls to real engines use your provider accounts, send the requested content to their APIs, and
 may incur charges. The application's volume limits are not a spending cap.
@@ -83,13 +88,13 @@ learned. A tool that reduces all of this to a single number per query mostly mea
 
 ### Two axes, never mixed
 
-Each query is asked twice: in **PARAMETRIC** mode, with all search tools disabled — what the model
-retained from its training — and in **GROUNDED** mode, with the provider's native web search enabled — what it
-goes looking for at answer time. The two medians are reported side by side and never averaged, because their
-difference is the only actionable diagnostic they carry together. A positive **retrieval gap** means that
-search works in your favor and that the worthwhile investment is the content the engines will retrieve; a negative
-gap means that the models know you but stop citing you as soon as they consult their sources,
-and the worthwhile investment becomes those sources.
+Each supported query/provider pair is asked in **PARAMETRIC** mode, with provider search tools disabled,
+and **GROUNDED** mode, with the provider's native web search enabled. These settings describe how the
+API request is made; they do not expose what a model memorized during training. The two summaries stay
+separate. The retrieval difference compares the same query/provider cells across modes and can guide
+investigation of the retrieved sources. It does not establish a causal effect of search or prescribe
+which content investment will succeed. Inspect the support size, provider panel and uncertainty before
+acting; see the [measurement methodology](docs/measurement-methodology.md).
 
 ### Intervals, never a bare number
 
@@ -114,7 +119,8 @@ with its progress tracking, retries, and cancellation; its conditions are descri
 
 ## Architecture
 
-The Next.js application never makes a provider call within the lifecycle of an HTTP request. Launching an analysis
+Analysis execution runs outside the lifecycle of an HTTP request; credential validation remains a bounded
+provider call in its own route. Launching an analysis
 **materializes the entire plan** — a `Run`, its `RunTask` records (one per cell), its `RunSample` records (one per
 billable call), and the corresponding jobs — in a single PostgreSQL transaction, then responds `202`. Execution belongs
 to one or more separate **worker** processes that drain a durable, Postgres-backed queue: claiming via
@@ -122,8 +128,8 @@ to one or more separate **worker** processes that drain a durable, Postgres-back
 leases (a killed worker hands its jobs back to the sweeper instead of stranding them), and a token bucket shared in the
 database (the limit that matters is the provider's, not a container's). Progress is tracked by counters decremented
 in the transaction that writes the result: `pendingSamples` reaching zero triggers the task's aggregation, and
-`pendingTasks` reaching zero triggers the run's. Nothing polls, and the web container can restart mid-run without
-losing work.
+`pendingTasks` reaching zero triggers the run's. Aggregation is triggered by those persisted counters; workers poll the durable queue. The web container
+can restart mid-run without losing queued work.
 
 ## Development and demo
 
@@ -131,7 +137,7 @@ The commands below are intended only for **development against an isolated datab
 
 ### Local
 
-Prerequisites: Node ≥ 20.11 and PostgreSQL 16.
+Prerequisites: Node 22.23.4 (see `.nvmrc`) or Node 24.19+ LTS and PostgreSQL 16.
 
 ```bash
 ./setup.sh              # creates .env, installs dependencies, generates secrets, then stops

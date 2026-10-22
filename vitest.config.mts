@@ -3,8 +3,7 @@ import path from "node:path";
 
 // `.mts`, so Vite's native config loader reads it as the ESM it is instead of
 // warning that it parsed ESM syntax as CommonJS. `__dirname` does not exist
-// under that loader; `import.meta.dirname` is its equivalent (Node >= 20.11,
-// which is the floor this package already declares).
+// under that loader; `import.meta.dirname` is its equivalent on the supported Node LTS versions.
 const rootDir = import.meta.dirname;
 
 export default defineConfig({

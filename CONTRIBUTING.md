@@ -4,6 +4,8 @@ Merci de l'intérêt porté au projet. Ce document décrit comment faire tourner
 
 ## Faire tourner la pile
 
+Utilisez Node 22.23.4 (`.nvmrc`) ou Node 24.19+ LTS, puis les dépendances verrouillées par `npm ci`.
+
 ```bash
 ./setup.sh                  # crée .env, installe, génère les secrets, s'arrête
 #                             pointez DATABASE_URL dans le .env ainsi créé
@@ -17,7 +19,7 @@ npm run worker              # second terminal — sans lui, les analyses n'avanc
 Ou, avec Docker :
 
 ```bash
-cp .env.example .env && npm install && npm run keygen && docker compose up
+cp .env.example .env && npm ci && npm run keygen && docker compose up
 ```
 
 `npm run keygen` s'exécute par `tsx` : il lui faut les dépendances installées, ce que la voie Docker ne fait pas pour vous.
@@ -37,8 +39,8 @@ npm audit --audit-level=moderate
 ```
 
 La CI les exécute sur un PostgreSQL 16 éphémère après `prisma migrate deploy`, et
-chacune est bloquante : un échec ferme la pull request, il n'y a pas d'étape
-tolérée.
+chacune est bloquante pour le job : un échec le rend rouge. La CI ne ferme pas
+la pull request et ne prouve pas à elle seule qu'une protection de branche est activée.
 
 L'audit vient en dernier, à dessein. Un avis de sécurité est publié par le monde
 extérieur, pas par l'auteur de la branche qu'il fait échouer : placé en tête, il
@@ -46,13 +48,11 @@ effaçait d'un coup les retours de lint, de typage, de test et de build sur tout
 les branches ouvertes. Après eux, un audit rouge ajoute une information au lieu
 d'en masquer quatre.
 
-Il porte sur l'arbre complet, dépendances de développement comprises, et le seuil
-est `moderate`. Ce n'est pas un excès de zèle : le `Dockerfile` copie l'intégralité
-de `node_modules` de l'étage `builder` vers l'étage `runner` — l'entrypoint a
-besoin de la CLI Prisma et le worker exécute du TypeScript via tsx. Les
-dépendances de développement partent donc réellement en production ici, et
-`--omit=dev` sous-estimerait l'exposition réelle. Dans cette image, la catégorie
-« paquet de build uniquement » n'existe pas.
+Il porte sur l'arbre complet, dépendances de développement comprises, avec le seuil `moderate`.
+L'image web utilise la sortie standalone de Next ; le worker utilise les dépendances de production
+élaguées. L'image de compilation et le migrateur ponctuel conservent les outils de développement.
+`npm audit --omit=dev` fournit un signal complémentaire sur l'arbre runtime, sans remplacer cette gate.
+Les avis amont non résolus et la surcharge PostCSS sont documentés dans [l'état du projet](docs/project-status.md).
 
 ## Les couches de test
 
