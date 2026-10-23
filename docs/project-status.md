@@ -22,6 +22,39 @@ No stable GitHub release is asserted by this document.
   `DATABASE_URL`, the two database suites are intentionally skipped. A unit-only
   run is not evidence that database concurrency or recovery works.
 
+## Dashboard React cleanup — 23 October 2026
+
+The six React warnings in Queries, Sources, Runs and Settings are corrected.
+`npm run lint` reports **zero errors and zero warnings**. The temporary warning
+overrides for `react-hooks/set-state-in-effect` and `react-hooks/refs` have been
+removed, and the lint command now uses `--max-warnings=0` to reject regressions.
+
+Page state resets when the project changes. Loading results are applied in
+network response callbacks, obsolete responses are ignored, and run detail
+loading is derived from the selected run and its progress. Sampling edits update
+their protection ref in event handlers; a refresh or an earlier save cannot
+erase edits made while a request is pending.
+
+Validation was repeated on the reference Node **22.23.4**, with npm **10.9.9**:
+
+- Lint and typecheck pass, with no lint warnings.
+- `npm run test:coverage` passes **569 tests**; **24 PostgreSQL tests are skipped**
+  locally without `DATABASE_URL`. The **16 new React regression tests** exercise
+  retries, project changes, StrictMode cleanup, obsolete responses, run refreshes
+  and edits made during a settings refresh or save.
+- `npm run build -- --webpack` passes. The standard Turbopack build could not
+  open its local worker port in this execution environment; the unchanged
+  `npm run build` remains required in CI, alongside PostgreSQL and container
+  qualification. The local Webpack result does not replace those checks.
+- `npm audit --audit-level=moderate` and `npm audit --omit=dev` both report
+  **zero vulnerabilities**. The new `jsdom` test dependency and its transitive
+  packages are development-only; existing dependency versions are unchanged.
+
+The run-detail type now describes expanded sample arrays directly, without the
+previous incompatible intersection or the route's type assertion. Explicit run
+refreshes request a fresh snapshot, retry open details, and ignore continuations
+after the page unmounts. The dependency reviews below retain their dated results.
+
 ## Dependency review — 23 October 2026
 
 Three Next.js advisories published on 22 October 2026, after the review below,
@@ -43,11 +76,13 @@ published version; no package change removed it. With the committed lockfile,
 `npm audit` and `npm audit --omit=dev` both report **zero vulnerabilities**, and
 the unchanged `npm audit --audit-level=moderate` gate passes locally.
 
-Local validation of this change on Node 22.23.2 passes lint (the same six existing
-React warnings), typecheck, production build on Next.js 16.4.3 and **553 tests**;
-**24 database tests are skipped** without PostgreSQL. Database integration and
-container qualification for this revision come from its CI run, not from this
-local check. Rebuild container images to pick up the corrected Next version.
+The security update at
+[`8730c05`](https://github.com/alebgl77/generative-engine-monitor/commit/8730c05ec2b8b274d1787671e1a4df112f4388c2)
+was qualified by [CI run 40013787227](https://github.com/alebgl77/generative-engine-monitor/actions/runs/40013787227)
+on the reference Node **22.23.4** and npm **10.9.9**. All **577 tests across 38
+files**, typecheck, production build, mock HTTP smoke, full dependency audit and
+container qualification passed. This dated result precedes the React cleanup
+described above. Rebuild container images to pick up the corrected Next version.
 
 ## Dependency review — 22 October 2026
 
@@ -95,7 +130,7 @@ remained. Recheck
 the advisory and dependency paths before publishing a release; audit results
 change when upstream advisories or packages change.
 
-## Recorded checks
+## Historical checks — 22 October 2026
 
 Before this maintenance change, commit
 [`3a377934`](https://github.com/alebgl77/generative-engine-monitor/commit/3a37793404c2d19efe5d22b7caf16f70552c48c2)

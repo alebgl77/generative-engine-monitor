@@ -94,6 +94,11 @@ function supportsMode(provider: ProviderSummary, mode: SamplingMode): boolean {
 export default function SettingsPage() {
   const params = useParams();
   const projectId = params.projectId as string;
+
+  return <ProjectSettings key={projectId} projectId={projectId} />;
+}
+
+function ProjectSettings({ projectId }: { projectId: string }) {
   const { toast } = useToast();
 
   const [brands, setBrands] = useState<ProjectBrand[]>([]);
@@ -114,63 +119,80 @@ export default function SettingsPage() {
   const [samplingDirty, setSamplingDirty] = useState(false);
   // A background refresh must never overwrite sampling settings the user is editing.
   const samplingDirtyRef = useRef(false);
-  samplingDirtyRef.current = samplingDirty;
+  const samplingRevisionRef = useRef(0);
+  const activeRef = useRef(false);
+  const loadRevisionRef = useRef(0);
 
-  const loadAll = useCallback(async () => {
-    const [projectRes, brandsRes, competitorsRes, queriesRes, providersRes, credsRes] =
-      await Promise.allSettled([
-        requestJson<ProjectSummary>(`/api/projects/${projectId}`),
-        requestJson<ProjectBrand[]>(`/api/projects/${projectId}/brands`),
-        requestJson<ProjectCompetitor[]>(`/api/projects/${projectId}/competitors`),
-        requestJson<ProjectQuery[]>(`/api/projects/${projectId}/queries`),
-        requestJson<ProviderSummary[]>("/api/providers"),
-        requestJson<CredentialSummary[]>("/api/providers/credentials"),
-      ]);
+  function updateSamplingDirty(dirty: boolean) {
+    samplingRevisionRef.current += 1;
+    samplingDirtyRef.current = dirty;
+    setSamplingDirty(dirty);
+  }
 
-    const failures: string[] = [];
+  const loadAll = useCallback(() => {
+    const loadRevision = ++loadRevisionRef.current;
+    const samplingRevision = samplingRevisionRef.current;
 
-    if (projectRes.status === "fulfilled") {
-      if (!samplingDirtyRef.current) {
-        setRepetitions(clampRepetitions(projectRes.value.repetitions));
-        setModes(
-          Array.isArray(projectRes.value.samplingModes) &&
-            projectRes.value.samplingModes.length > 0
-            ? projectRes.value.samplingModes
-            : ALL_MODES
-        );
+    return Promise.allSettled([
+      requestJson<ProjectSummary>(`/api/projects/${projectId}`),
+      requestJson<ProjectBrand[]>(`/api/projects/${projectId}/brands`),
+      requestJson<ProjectCompetitor[]>(`/api/projects/${projectId}/competitors`),
+      requestJson<ProjectQuery[]>(`/api/projects/${projectId}/queries`),
+      requestJson<ProviderSummary[]>("/api/providers"),
+      requestJson<CredentialSummary[]>("/api/providers/credentials"),
+    ]).then(([projectRes, brandsRes, competitorsRes, queriesRes, providersRes, credsRes]) => {
+      if (!activeRef.current || loadRevision !== loadRevisionRef.current) return;
+
+      const failures: string[] = [];
+
+      if (projectRes.status === "fulfilled") {
+        if (!samplingDirtyRef.current && samplingRevision === samplingRevisionRef.current) {
+          setRepetitions(clampRepetitions(projectRes.value.repetitions));
+          setModes(
+            Array.isArray(projectRes.value.samplingModes) &&
+              projectRes.value.samplingModes.length > 0
+              ? projectRes.value.samplingModes
+              : ALL_MODES
+          );
+        }
+      } else {
+        failures.push(`projet : ${messageOf(projectRes.reason)}`);
       }
-    } else {
-      failures.push(`projet : ${messageOf(projectRes.reason)}`);
-    }
 
-    if (brandsRes.status === "fulfilled") setBrands(brandsRes.value);
-    else failures.push(`marque : ${messageOf(brandsRes.reason)}`);
+      if (brandsRes.status === "fulfilled") setBrands(brandsRes.value);
+      else failures.push(`marque : ${messageOf(brandsRes.reason)}`);
 
-    if (competitorsRes.status === "fulfilled") setCompetitors(competitorsRes.value);
-    else failures.push(`concurrents : ${messageOf(competitorsRes.reason)}`);
+      if (competitorsRes.status === "fulfilled") setCompetitors(competitorsRes.value);
+      else failures.push(`concurrents : ${messageOf(competitorsRes.reason)}`);
 
-    if (queriesRes.status === "fulfilled") setQueries(queriesRes.value);
-    else failures.push(`requêtes : ${messageOf(queriesRes.reason)}`);
+      if (queriesRes.status === "fulfilled") setQueries(queriesRes.value);
+      else failures.push(`requêtes : ${messageOf(queriesRes.reason)}`);
 
-    if (providersRes.status === "fulfilled") setProviders(providersRes.value);
-    else failures.push(`moteurs : ${messageOf(providersRes.reason)}`);
+      if (providersRes.status === "fulfilled") setProviders(providersRes.value);
+      else failures.push(`moteurs : ${messageOf(providersRes.reason)}`);
 
-    if (credsRes.status === "fulfilled") setCredentials(credsRes.value);
-    else failures.push(`clés API : ${messageOf(credsRes.reason)}`);
+      if (credsRes.status === "fulfilled") setCredentials(credsRes.value);
+      else failures.push(`clés API : ${messageOf(credsRes.reason)}`);
 
-    setLoading(false);
+      setLoading(false);
 
-    if (failures.length > 0) {
-      toast({
-        title: "Chargement incomplet",
-        description: failures.join(" · "),
-        variant: "destructive",
-      });
-    }
+      if (failures.length > 0) {
+        toast({
+          title: "Chargement incomplet",
+          description: failures.join(" · "),
+          variant: "destructive",
+        });
+      }
+    });
   }, [projectId, toast]);
 
   useEffect(() => {
+    activeRef.current = true;
     void loadAll();
+    return () => {
+      activeRef.current = false;
+      loadRevisionRef.current += 1;
+    };
   }, [loadAll]);
 
   /** Runs a mutation, reloads on success and leaves the current state untouched on failure. */
@@ -179,16 +201,18 @@ export default function SettingsPage() {
       setBusy(key);
       try {
         await action();
+        if (!activeRef.current) return;
         await loadAll();
-        if (success) toast({ title: success });
+        if (activeRef.current && success) toast({ title: success });
       } catch (error) {
+        if (!activeRef.current) return;
         toast({
           title: failureTitle,
           description: messageOf(error),
           variant: "destructive",
         });
       } finally {
-        setBusy(null);
+        if (activeRef.current) setBusy(null);
       }
     },
     [loadAll, toast]
@@ -224,7 +248,7 @@ export default function SettingsPage() {
   const plannedCalls = activeQueryCount * plannedCells * repetitions;
 
   function toggleMode(mode: SamplingMode) {
-    setSamplingDirty(true);
+    updateSamplingDirty(true);
     setModes((current) =>
       current.indexOf(mode) >= 0
         ? current.filter((m) => m !== mode)
@@ -233,6 +257,7 @@ export default function SettingsPage() {
   }
 
   async function saveSampling() {
+    const savedRevision = samplingRevisionRef.current;
     await submit(
       "sampling",
       "Enregistrement impossible",
@@ -241,7 +266,7 @@ export default function SettingsPage() {
           `/api/projects/${projectId}`,
           jsonInit("PUT", { repetitions, samplingModes: modes })
         );
-        setSamplingDirty(false);
+        if (savedRevision === samplingRevisionRef.current) updateSamplingDirty(false);
       },
       "Échantillonnage enregistré"
     );
@@ -332,7 +357,9 @@ export default function SettingsPage() {
         `/api/providers/credentials/${credential.id}`,
         jsonInit("POST", {})
       );
+      if (!activeRef.current) return;
       await loadAll();
+      if (!activeRef.current) return;
       toast({
         title: result.isValid
           ? `Clé ${credential.providerLabel} valide`
@@ -341,13 +368,14 @@ export default function SettingsPage() {
         variant: result.isValid ? "default" : "destructive",
       });
     } catch (error) {
+      if (!activeRef.current) return;
       toast({
         title: `Test de la clé ${credential.providerLabel} impossible`,
         description: messageOf(error),
         variant: "destructive",
       });
     } finally {
-      setBusy(null);
+      if (activeRef.current) setBusy(null);
     }
   }
 
@@ -602,7 +630,7 @@ export default function SettingsPage() {
               id="repetitions"
               value={String(repetitions)}
               onChange={(e) => {
-                setSamplingDirty(true);
+                updateSamplingDirty(true);
                 setRepetitions(clampRepetitions(Number(e.target.value)));
               }}
               className="h-9 w-24"

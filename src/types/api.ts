@@ -191,7 +191,7 @@ export interface SampleDetail {
 
 export interface RunDetailResponse extends RunSummary {
   /** The same page as `tasks`, each task expanded with its samples. */
-  tasksDetail: (RunTaskSummary & { samples: SampleDetail[] })[];
+  tasksDetail: (Omit<RunTaskSummary, "samples"> & { samples: SampleDetail[] })[];
 }
 
 export interface CredentialSummary {

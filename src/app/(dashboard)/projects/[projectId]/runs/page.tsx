@@ -42,6 +42,13 @@ interface StatusDisplay {
   className: string;
 }
 
+interface DetailResult {
+  runId: string;
+  stamp: string;
+  data: RunDetailResponse | null;
+  error: string | null;
+}
+
 const RUN_STATUS: Record<RunStatus, StatusDisplay> = {
   PENDING: { label: "En attente", className: "bg-muted text-muted-foreground" },
   RUNNING: { label: "En cours", className: "bg-primary text-primary-foreground" },
@@ -134,8 +141,11 @@ function ScoreCell({ score }: { score: AxisSummary | null }) {
 }
 
 export default function RunsPage() {
-  const params = useParams();
-  const projectId = params.projectId as string;
+  const { projectId } = useParams<{ projectId: string }>();
+  return <ProjectRuns key={projectId} projectId={projectId} />;
+}
+
+function ProjectRuns({ projectId }: { projectId: string }) {
   const { toast } = useToast();
 
   const [runs, setRuns] = useState<RunSummary[]>([]);
@@ -147,29 +157,51 @@ export default function RunsPage() {
 
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<RunDetailResponse | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [detailError, setDetailError] = useState<string | null>(null);
+  const [detailResult, setDetailResult] = useState<DetailResult | null>(null);
+  const [detailRevision, setDetailRevision] = useState(0);
 
-  const inFlight = useRef(false);
+  const activeRef = useRef(false);
+  const inFlight = useRef<{
+    controller: AbortController;
+    promise: Promise<void>;
+  } | null>(null);
 
-  const loadRuns = useCallback(async () => {
-    if (inFlight.current) return;
-    inFlight.current = true;
-    try {
-      const data = await requestJson<RunsResponse>(`/api/projects/${projectId}/runs`);
-      setRuns(data.runs);
-      setLoadError(null);
-    } catch (error) {
-      setLoadError(messageOf(error));
-    } finally {
-      inFlight.current = false;
-      setLoading(false);
+  const loadRuns = useCallback((refresh = false) => {
+    if (!activeRef.current) return Promise.resolve();
+    if (inFlight.current) {
+      if (!refresh) return inFlight.current.promise;
+      // Explicit refreshes and completed mutations need a newer snapshot.
+      inFlight.current.controller.abort();
     }
+    const controller = new AbortController();
+    const promise = requestJson<RunsResponse>(`/api/projects/${projectId}/runs`, {
+      signal: controller.signal,
+    })
+      .then((data) => {
+        if (controller.signal.aborted) return;
+        setRuns(data.runs);
+        setLoadError(null);
+        if (refresh) setDetailRevision((current) => current + 1);
+      })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) setLoadError(messageOf(error));
+      })
+      .finally(() => {
+        if (inFlight.current?.controller === controller) inFlight.current = null;
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    inFlight.current = { controller, promise };
+    return promise;
   }, [projectId]);
 
   useEffect(() => {
+    activeRef.current = true;
     void loadRuns();
+    return () => {
+      activeRef.current = false;
+      inFlight.current?.controller.abort();
+      inFlight.current = null;
+    };
   }, [loadRuns]);
 
   const hasActiveRun = useMemo(() => runs.some((run) => isNonTerminal(run.status)), [runs]);
@@ -187,41 +219,52 @@ export default function RunsPage() {
   const expandedRun = runs.find((run) => run.id === expandedRunId) ?? null;
   const detailStamp =
     expandedTaskId && expandedRun
-      ? `${expandedRun.id}:${expandedRun.progress.doneSamples}:${expandedRun.progress.failedSamples}`
+      ? [
+          expandedRun.id,
+          expandedRun.status,
+          expandedRun.scoringVersion,
+          expandedRun.progress.doneSamples,
+          expandedRun.progress.failedSamples,
+          detailRevision,
+        ].join(":")
       : null;
+  // A new progress stamp is loading until its response arrives. Keep the same
+  // run's existing samples visible during polling, but never another run's data.
+  const detail =
+    detailStamp && detailResult?.runId === expandedRunId ? detailResult.data : null;
+  const detailLoading = detailStamp !== null && detailResult?.stamp !== detailStamp;
+  const detailError = detailResult?.stamp === detailStamp ? detailResult.error : null;
 
   useEffect(() => {
-    if (!detailStamp || !expandedRunId) {
-      setDetail(null);
-      setDetailError(null);
-      return;
-    }
-    let obsolete = false;
-    setDetailLoading(true);
-    requestJson<RunDetailResponse>(`/api/projects/${projectId}/runs/${expandedRunId}`)
+    if (!detailStamp || !expandedRunId) return;
+    const controller = new AbortController();
+    requestJson<RunDetailResponse>(`/api/projects/${projectId}/runs/${expandedRunId}`, {
+      signal: controller.signal,
+    })
       .then((data) => {
-        if (obsolete) return;
-        setDetail(data);
-        setDetailError(null);
+        if (controller.signal.aborted) return;
+        setDetailResult({ runId: expandedRunId, stamp: detailStamp, data, error: null });
       })
       .catch((error: unknown) => {
-        if (obsolete) return;
-        setDetailError(messageOf(error));
-      })
-      .finally(() => {
-        if (!obsolete) setDetailLoading(false);
+        if (controller.signal.aborted) return;
+        setDetailResult((previous) => ({
+          runId: expandedRunId,
+          stamp: detailStamp,
+          data: previous?.runId === expandedRunId ? previous.data : null,
+          error: messageOf(error),
+        }));
       });
-    return () => {
-      obsolete = true;
-    };
+    return () => controller.abort();
   }, [detailStamp, expandedRunId, projectId]);
 
   function toggleRun(runId: string) {
+    setDetailResult(null);
     setExpandedTaskId(null);
     setExpandedRunId((current) => (current === runId ? null : runId));
   }
 
   function toggleTask(taskId: string) {
+    if (expandedTaskId === taskId) setDetailResult(null);
     setExpandedTaskId((current) => (current === taskId ? null : taskId));
   }
 
@@ -236,6 +279,7 @@ export default function RunsPage() {
           body: "{}",
         }
       );
+      if (!activeRef.current) return;
       const skipped = created.skipped
         .map((cell) => `${cell.providerCode} · ${MODE_LABEL[cell.mode]}`)
         .join(", ");
@@ -245,15 +289,16 @@ export default function RunsPage() {
           created.totalSamples
         )} appels API.${skipped ? ` Combinaisons ignorées : ${skipped}.` : ""}`,
       });
-      await loadRuns();
+      await loadRuns(true);
     } catch (error) {
+      if (!activeRef.current) return;
       toast({
         title: "Lancement impossible",
         description: messageOf(error),
         variant: "destructive",
       });
     } finally {
-      setLaunching(false);
+      if (activeRef.current) setLaunching(false);
     }
   }
 
@@ -265,20 +310,22 @@ export default function RunsPage() {
         headers: { "Content-Type": "application/json" },
         body: "{}",
       });
+      if (!activeRef.current) return;
       toast({
         title: "Annulation demandée",
         description:
           "Les appels en attente sont abandonnés ; ceux déjà partis se terminent puis s’arrêtent.",
       });
-      await loadRuns();
+      await loadRuns(true);
     } catch (error) {
+      if (!activeRef.current) return;
       toast({
         title: "Annulation impossible",
         description: messageOf(error),
         variant: "destructive",
       });
     } finally {
-      setCancellingRunId(null);
+      if (activeRef.current) setCancellingRunId(null);
     }
   }
 
@@ -290,20 +337,22 @@ export default function RunsPage() {
         headers: { "Content-Type": "application/json" },
         body: "{}",
       });
+      if (!activeRef.current) return;
       toast({
         title: "Recalcul des scores lancé",
         description:
           "Les réponses déjà stockées sont rejouées : aucune n’est redemandée à un moteur. L’analyse de sentiment peut en revanche consulter son juge, ce qui est facturé.",
       });
-      await loadRuns();
+      await loadRuns(true);
     } catch (error) {
+      if (!activeRef.current) return;
       toast({
         title: "Recalcul impossible",
         description: messageOf(error),
         variant: "destructive",
       });
     } finally {
-      setRescoring(false);
+      if (activeRef.current) setRescoring(false);
     }
   }
 
@@ -325,7 +374,7 @@ export default function RunsPage() {
           moteur, en mode paramétrique et groundé, plusieurs fois.
         </p>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" size="sm" onClick={() => void loadRuns()}>
+          <Button variant="outline" size="sm" onClick={() => void loadRuns(true)}>
             <RefreshCw className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
             Actualiser
           </Button>

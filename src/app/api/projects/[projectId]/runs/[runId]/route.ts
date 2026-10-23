@@ -202,13 +202,10 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
     }
 
     const tasks = taskRows.map((task) => toTaskSummary(task, run));
-    // `tasksDetail` restates each summary with its samples expanded; the
-    // contract types that as an intersection, which the summary's own sample
-    // counters cannot inhabit.
-    const tasksDetail = taskRows.map((task, index) => ({
+    const tasksDetail: RunDetailResponse["tasksDetail"] = taskRows.map((task, index) => ({
       ...tasks[index],
       samples: task.samples.map((sample) => toSampleDetail(sample, run)),
-    })) as RunDetailResponse["tasksDetail"];
+    }));
 
     const payload: RunDetailResponse = {
       id: run.id,
