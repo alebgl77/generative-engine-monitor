@@ -22,6 +22,33 @@ No stable GitHub release is asserted by this document.
   `DATABASE_URL`, the two database suites are intentionally skipped. A unit-only
   run is not evidence that database concurrency or recovery works.
 
+## Dependency review — 23 October 2026
+
+Three Next.js advisories published on 22 October 2026, after the review below,
+affect the previously pinned **16.3.8**:
+[GHSA-2464-fhr4-w9xw](https://github.com/advisories/GHSA-2464-fhr4-w9xw) (critical,
+remote code execution in the Image Optimization API with SVG files),
+[GHSA-673q-mjm6-r5xr](https://github.com/advisories/GHSA-673q-mjm6-r5xr) (critical,
+remote code execution in `use cache` functions returning typed arrays) and
+[GHSA-p3m5-59mp-jv5r](https://github.com/advisories/GHSA-p3m5-59mp-jv5r) (high,
+App Router denial of service through Server Actions). All three list **16.4.1** as
+the first patched 16.x version. Next and `eslint-config-next` are now pinned to
+**16.4.3**, a bug-fix backport release on the 16.4 line; GitHub lists no advisory
+affecting it at the time of this review.
+
+The `braces` advisory described below,
+[GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm), was
+**withdrawn** by GitHub on 23 October 2026. `braces` remains at 3.0.3, the latest
+published version; no package change removed it. With the committed lockfile,
+`npm audit` and `npm audit --omit=dev` both report **zero vulnerabilities**, and
+the unchanged `npm audit --audit-level=moderate` gate passes locally.
+
+Local validation of this change on Node 22.23.2 passes lint (the same six existing
+React warnings), typecheck, production build on Next.js 16.4.3 and **553 tests**;
+**24 database tests are skipped** without PostgreSQL. Database integration and
+container qualification for this revision come from its CI run, not from this
+local check. Rebuild container images to pick up the corrected Next version.
+
 ## Dependency review — 22 October 2026
 
 The maintenance change updates Next and its ESLint configuration to **16.3.8**,
@@ -38,7 +65,10 @@ records the fix in 7.1.6. The application builds with 7.1.7 and its generated CS
 was byte-identical before and after this override. Remove the override when the
 upstream dependency ranges accept a corrected version, after repeating the build.
 
-### Remaining upstream issue
+### Upstream issue at the time of this review
+
+This subsection records the 22 October state. The advisory was withdrawn on
+23 October 2026 (see above).
 
 The local maintenance audit reported **seven high-severity dependency entries**.
 The subsequent [CI audit on 22 October 2026](https://github.com/alebgl77/generative-engine-monitor/actions/runs/39750168004/job/119728449698)
@@ -60,7 +90,8 @@ with those tools. The absence of a demonstrated application exploit does not
 close the advisory.
 
 The existing `npm audit --audit-level=moderate` gate remains blocking and unchanged.
-The full CI cannot be represented as green while this finding remains. Recheck
+At that time, the full CI could not be represented as green while this finding
+remained. Recheck
 the advisory and dependency paths before publishing a release; audit results
 change when upstream advisories or packages change.
 
