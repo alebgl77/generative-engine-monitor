@@ -12,19 +12,6 @@ const config = [
   },
   ...coreWebVitals,
   ...typescript,
-  {
-    /**
-     * eslint-plugin-react-hooks 7 folds in the React Compiler rules, which flag
-     * the load-on-mount effects and the render-time ref write the dashboard
-     * pages have always used. They are reported rather than enforced: rewriting
-     * six pages' data loading is a change to how the app fetches, not part of
-     * moving the framework forward, and it deserves its own commit.
-     */
-    rules: {
-      "react-hooks/set-state-in-effect": "warn",
-      "react-hooks/refs": "warn",
-    },
-  },
 ];
 
 export default config;

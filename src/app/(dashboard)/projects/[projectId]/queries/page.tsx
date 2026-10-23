@@ -111,42 +111,61 @@ function formatPercent(fraction: number): string {
 export default function QueriesPage() {
   const params = useParams<{ projectId: string }>();
   const projectId = params.projectId;
+
+  return <ProjectQueries key={projectId} projectId={projectId} />;
+}
+
+function ProjectQueries({ projectId }: { projectId: string }) {
   const { toast } = useToast();
 
   const [state, setState] = React.useState<LoadState>({ status: "loading" });
   const [filter, setFilter] = React.useState<PresenceFilter>("all");
   const [exporting, setExporting] = React.useState<"csv" | "json" | null>(null);
-  const requestRef = React.useRef(0);
+  const requestRef = React.useRef<AbortController | null>(null);
 
-  const load = React.useCallback(async () => {
-    const requestId = ++requestRef.current;
-    setState({ status: "loading" });
-    try {
-      const res = await fetch(`/api/projects/${projectId}/dashboard/queries`, {
-        cache: "no-store",
+  const load = React.useCallback(() => {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
+    return fetch(`/api/projects/${projectId}/dashboard/queries`, {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          const body = (await res.json().catch(() => null)) as ApiErrorResponse | null;
+          throw new Error(body?.error ?? `Erreur ${res.status}`);
+        }
+        return (await res.json()) as QueriesResponse;
+      })
+      .then((data) => {
+        if (controller.signal.aborted || requestRef.current !== controller) return;
+        setState({ status: "ready", data });
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted || requestRef.current !== controller) return;
+        setState({
+          status: "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Impossible de charger les requêtes.",
+        });
       });
-      if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as ApiErrorResponse | null;
-        throw new Error(body?.error ?? `Erreur ${res.status}`);
-      }
-      const data = (await res.json()) as QueriesResponse;
-      if (requestId !== requestRef.current) return;
-      setState({ status: "ready", data });
-    } catch (error) {
-      if (requestId !== requestRef.current) return;
-      setState({
-        status: "error",
-        message:
-          error instanceof Error
-            ? error.message
-            : "Impossible de charger les requêtes.",
-      });
-    }
   }, [projectId]);
 
   React.useEffect(() => {
     void load();
+    return () => {
+      requestRef.current?.abort();
+      requestRef.current = null;
+    };
   }, [load]);
+
+  function retry() {
+    setState({ status: "loading" });
+    void load();
+  }
 
   async function exportData(format: "csv" | "json") {
     setExporting(format);
@@ -202,7 +221,7 @@ export default function QueriesPage() {
           <CardDescription>{state.message}</CardDescription>
         </CardHeader>
         <CardContent>
-          <Button variant="outline" size="sm" onClick={() => void load()}>
+          <Button variant="outline" size="sm" onClick={retry}>
             <RefreshCw className="mr-2 h-4 w-4" aria-hidden />
             Réessayer
           </Button>
