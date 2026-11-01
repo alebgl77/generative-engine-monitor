@@ -12,6 +12,7 @@
     "start": "next start",
     "worker": "tsx src/worker/main.ts",
     "worker:health": "node scripts/worker-health.mjs",
+    "audit:security": "node scripts/audit-dependencies.mjs",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
