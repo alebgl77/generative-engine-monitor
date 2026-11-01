@@ -92,7 +92,7 @@ export async function withProject(
 }
 
 /** Parses and validates a JSON body, turning malformed input into a 400. */
-export async function parseBody<T extends z.ZodTypeAny>(
+export async function parseBody<T extends z.ZodType>(
   request: NextRequest,
   schema: T
 ): Promise<z.infer<T>> {
@@ -105,7 +105,7 @@ export async function parseBody<T extends z.ZodTypeAny>(
   return schema.parse(raw);
 }
 
-export function parseQuery<T extends z.ZodTypeAny>(request: NextRequest, schema: T): z.infer<T> {
+export function parseQuery<T extends z.ZodType>(request: NextRequest, schema: T): z.infer<T> {
   return schema.parse(Object.fromEntries(request.nextUrl.searchParams.entries()));
 }
 

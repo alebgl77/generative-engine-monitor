@@ -4,10 +4,10 @@ import { badRequest, notFound, tooManyRequests } from "@/lib/errors";
 
 const positiveLimit = z.coerce.number().int().positive().max(1_000_000);
 const schema = z.object({
-  MAX_SAMPLES_PER_RUN: positiveLimit.default(1000),
-  MAX_SAMPLES_PER_USER_DAY: positiveLimit.default(10000),
-  MAX_ACTIVE_RUNS_PER_USER: positiveLimit.default(3),
-  MAX_QUERIES_PER_PROJECT: positiveLimit.default(1000),
+  MAX_SAMPLES_PER_RUN: positiveLimit.prefault(1000),
+  MAX_SAMPLES_PER_USER_DAY: positiveLimit.prefault(10000),
+  MAX_ACTIVE_RUNS_PER_USER: positiveLimit.prefault(3),
+  MAX_QUERIES_PER_PROJECT: positiveLimit.prefault(1000),
 });
 export function getRunLimits(env: Record<string, string | undefined> = process.env) {
   return schema.parse(env);

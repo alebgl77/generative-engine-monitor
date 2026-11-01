@@ -58,14 +58,14 @@ const credentialKeys = z
 
 const schema = z
   .object({
-    NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+    NODE_ENV: z.enum(["development", "test", "production"]).prefault("development"),
     DATABASE_URL: z.string().min(1),
 
     NEXTAUTH_URL: z.string().url().optional(),
     NEXTAUTH_SECRET: z.string().min(16),
     REGISTRATION_ENABLED: z
       .enum(["true", "false"])
-      .default("true")
+      .prefault("true")
       .transform((v) => v === "true"),
 
     // Credential encryption. Rotation: add a new version, bump CURRENT, then
@@ -76,32 +76,32 @@ const schema = z
 
     // Model ids are configuration, not code. Hardcoding them is what silently
     // broke this application when two providers retired their 2025 models.
-    OPENAI_MODEL: z.string().default("gpt-5.6-luna"),
-    ANTHROPIC_MODEL: z.string().default("claude-sonnet-5"),
-    GEMINI_MODEL: z.string().default("gemini-3.6-flash"),
-    PERPLEXITY_MODEL: z.string().default("sonar"),
+    OPENAI_MODEL: z.string().prefault("gpt-5.6-luna"),
+    ANTHROPIC_MODEL: z.string().prefault("claude-sonnet-5"),
+    GEMINI_MODEL: z.string().prefault("gemini-3.6-flash"),
+    PERPLEXITY_MODEL: z.string().prefault("sonar"),
 
-    SENTIMENT_JUDGE_PROVIDER: z.string().default("openai"),
-    SENTIMENT_JUDGE_MODEL: z.string().default("gpt-5.6-luna"),
+    SENTIMENT_JUDGE_PROVIDER: z.string().prefault("openai"),
+    SENTIMENT_JUDGE_MODEL: z.string().prefault("gpt-5.6-luna"),
     SENTIMENT_ENABLED: z
       .enum(["true", "false"])
-      .default("true")
+      .prefault("true")
       .transform((v) => v === "true"),
 
     // Number of reverse proxies in front of the app whose X-Forwarded-For
     // entries can be trusted. Zero means the forwarded headers are ignored: any
     // client can write them, so believing one hands out free rate-limit buckets.
-    TRUSTED_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
+    TRUSTED_PROXY_HOPS: z.coerce.number().int().min(0).max(5).prefault(0),
 
     WORKER_ID: z.string().optional(),
-    WORKER_BATCH_SIZE: z.coerce.number().int().positive().max(50).default(5),
+    WORKER_BATCH_SIZE: z.coerce.number().int().positive().max(50).prefault(5),
 
     SEED_DEMO: z
       .enum(["true", "false"])
-      .default("false")
+      .prefault("false")
       .transform((v) => v === "true"),
 
-    LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+    LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).prefault("info"),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === "production") {

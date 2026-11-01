@@ -9,6 +9,12 @@ describe("run budget validation", () => {
     expect(getRunLimits({})).toEqual({ MAX_SAMPLES_PER_RUN: 1000, MAX_SAMPLES_PER_USER_DAY: 10000,
       MAX_ACTIVE_RUNS_PER_USER: 3, MAX_QUERIES_PER_PROJECT: 1000 });
   });
+  it("coerces numeric strings while leaving unspecified limits at their validated defaults", () => {
+    expect(getRunLimits({ MAX_SAMPLES_PER_RUN: "42", MAX_ACTIVE_RUNS_PER_USER: "7" })).toEqual({
+      MAX_SAMPLES_PER_RUN: 42, MAX_SAMPLES_PER_USER_DAY: 10000,
+      MAX_ACTIVE_RUNS_PER_USER: 7, MAX_QUERIES_PER_PROJECT: 1000,
+    });
+  });
   it.each(["0", "-1", "1.5", "Infinity", "bad", "1000001"])("rejects invalid configured limits %s", (value) => {
     expect(() => getRunLimits({ MAX_SAMPLES_PER_RUN: value })).toThrow();
   });

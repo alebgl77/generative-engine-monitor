@@ -27,24 +27,24 @@ const createSchema = z.object({
     .trim()
     .toUpperCase()
     .regex(/^[A-Z]{2}$/, "code pays ISO à 2 lettres attendu")
-    .default("FR"),
+    .prefault("FR"),
   targetLanguage: z
     .string()
     .trim()
     .toLowerCase()
     .regex(/^[a-z]{2}$/, "code langue ISO à 2 lettres attendu")
-    .default("fr"),
+    .prefault("fr"),
   repetitions: z
     .number()
     .int("nombre entier attendu")
     .min(1, "au moins 1 répétition")
     .max(10, "10 répétitions au maximum")
-    .default(3),
+    .prefault(3),
   samplingModes: z
     .array(z.enum(["PARAMETRIC", "GROUNDED"]))
     .min(1, "au moins un mode d'échantillonnage")
     .transform((modes) => Array.from(new Set(modes)))
-    .default(["PARAMETRIC", "GROUNDED"]),
+    .prefault(["PARAMETRIC", "GROUNDED"]),
 });
 
 const projectShape = {

@@ -34,12 +34,12 @@ const querySchema = z.object({
     .int("nombre entier attendu")
     .min(1, "au moins 1 tâche")
     .max(MAX_TASK_LIMIT, `${MAX_TASK_LIMIT} tâches au maximum`)
-    .default(DEFAULT_TASK_LIMIT),
+    .prefault(DEFAULT_TASK_LIMIT),
   offset: z.coerce
     .number()
     .int("nombre entier attendu")
     .min(0, "décalage positif attendu")
-    .default(0),
+    .prefault(0),
 });
 
 const taskInclude = {

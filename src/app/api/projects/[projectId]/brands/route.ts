@@ -26,7 +26,7 @@ const aliasesSchema = z
   .array(z.string().trim().min(1, "alias vide").max(80, "80 caractères maximum"))
   .max(20, "20 alias au maximum")
   .transform((list) => Array.from(new Set(list)))
-  .default([]);
+  .prefault([]);
 
 const createSchema = z.object({
   name: z.string().trim().min(1, "nom requis").max(120, "120 caractères maximum"),

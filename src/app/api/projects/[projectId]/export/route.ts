@@ -12,7 +12,7 @@ import { runForReading, analysisCoverage } from "@/lib/scoring/read-model";
 type RouteContext = { params: Promise<{ projectId: string }> };
 
 const querySchema = z.object({
-  format: z.enum(["csv", "json"]).default("csv"),
+  format: z.enum(["csv", "json"]).prefault("csv"),
 });
 
 interface ExportRow {

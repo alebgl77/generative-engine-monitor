@@ -56,3 +56,53 @@ describe("registration environment setting", () => {
     expect(fresh.getEnv().REGISTRATION_ENABLED).toBe(false);
   });
 });
+
+describe("environment validation contracts", () => {
+  it("preserves transformed boolean defaults and numeric coercions", async () => {
+    vi.stubEnv("SENTIMENT_ENABLED", undefined);
+    vi.stubEnv("SEED_DEMO", undefined);
+    vi.stubEnv("TRUSTED_PROXY_HOPS", undefined);
+    vi.stubEnv("WORKER_BATCH_SIZE", undefined);
+    const { getEnv } = await import("./env");
+    expect(getEnv()).toMatchObject({
+      REGISTRATION_ENABLED: true, SENTIMENT_ENABLED: true, SEED_DEMO: false,
+      TRUSTED_PROXY_HOPS: 0, WORKER_BATCH_SIZE: 5, CREDENTIAL_KEY_CURRENT: 1,
+    });
+  });
+
+  it("coerces supplied numeric configuration without changing credential records", async () => {
+    vi.stubEnv("TRUSTED_PROXY_HOPS", "2");
+    vi.stubEnv("WORKER_BATCH_SIZE", "10");
+    const keys = { "1": Buffer.alloc(32, 0x11).toString("base64"), "2": Buffer.alloc(32, 0x22).toString("base64") };
+    vi.stubEnv("CREDENTIAL_KEYS", JSON.stringify(keys));
+    vi.stubEnv("CREDENTIAL_KEY_CURRENT", "2");
+    const { getEnv } = await import("./env");
+    expect(getEnv()).toMatchObject({
+      TRUSTED_PROXY_HOPS: 2, WORKER_BATCH_SIZE: 10, CREDENTIAL_KEY_CURRENT: 2,
+      CREDENTIAL_KEYS: keys,
+    });
+  });
+
+  it.each([
+    ["{", /CREDENTIAL_KEYS must be JSON/],
+    [JSON.stringify({ bad: Buffer.alloc(32, 0x11).toString("base64") }), /CREDENTIAL_KEYS invalid/],
+    [JSON.stringify({ "1": "short" }), /must be a base64-encoded 32-byte key/],
+  ])("rejects malformed credential configuration: %s", async (raw, expected) => {
+    vi.stubEnv("CREDENTIAL_KEYS", raw);
+    const { getEnv } = await import("./env");
+    expect(() => getEnv()).toThrow(expected);
+  });
+
+  it("retains the cross-field credential-key version guard", async () => {
+    vi.stubEnv("CREDENTIAL_KEY_CURRENT", "2");
+    const { getEnv } = await import("./env");
+    expect(() => getEnv()).toThrow(/points to version 2, which is absent from CREDENTIAL_KEYS/);
+  });
+
+  it("retains the production demo-account guard after boolean transformation", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("SEED_DEMO", "true");
+    const { getEnv } = await import("./env");
+    expect(() => getEnv()).toThrow(/must not be enabled in production/);
+  });
+});
