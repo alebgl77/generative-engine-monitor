@@ -132,8 +132,9 @@ jobs:
       #
       # Audit both supply-chain/build dependencies and production dependencies.
       # Dev dependencies now exist only in the build and one-shot migrator.
+      # A reviewed, lock-bound exception retains the full report and expires.
       - name: Audit dependencies
-        run: npm audit --audit-level=moderate
+        run: npm run audit:security
 
   containers:
     runs-on: ubuntu-latest

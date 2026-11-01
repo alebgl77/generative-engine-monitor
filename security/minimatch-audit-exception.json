@@ -1,0 +1,190 @@
+{
+  "schemaVersion": 1,
+  "advisoryUrl": "https://github.com/advisories/GHSA-g3hv-75wg-m249",
+  "expiresAt": "2026-11-15T23:00:00Z",
+  "lockSha256": "24eaeafcc61e5e50599b8b747d7cf8a1e225aa29a03d5e2e0f51066ef226994f",
+  "copies": [
+    {
+      "path": "node_modules/@typescript-eslint/typescript-estree/node_modules/minimatch",
+      "version": "10.2.6",
+      "integrity": "sha512-vpLQEs+VLCr1nU0BXS07maYoFwlDAH0gngQuuttxIwutDFEMHq2blX+8vpgxDdK3J1PwjCJiep77OitTZ4Ll1A==",
+      "dev": true
+    },
+    {
+      "path": "node_modules/minimatch",
+      "version": "3.1.5",
+      "integrity": "sha512-VgjWUsnnT6n+NUk6eZq77zeFdpW2LWDzP6zFGrCbHXiYNul5Dzqk2HHQ5uFH2DNW5Xbp8+jVzaeNt94ssEEl4w==",
+      "dev": true
+    }
+  ],
+  "expectedFindings": {
+    "@eslint-community/eslint-utils": {
+      "nodes": [
+        "node_modules/@eslint-community/eslint-utils",
+        "node_modules/@next/eslint-plugin-next/node_modules/@eslint-community/eslint-utils"
+      ],
+      "via": [
+        "package:eslint"
+      ]
+    },
+    "@eslint/config-array": {
+      "nodes": [
+        "node_modules/@eslint/config-array"
+      ],
+      "via": [
+        "package:minimatch"
+      ]
+    },
+    "@eslint/eslintrc": {
+      "nodes": [
+        "node_modules/@eslint/eslintrc"
+      ],
+      "via": [
+        "package:minimatch"
+      ]
+    },
+    "@next/eslint-plugin-next": {
+      "nodes": [
+        "node_modules/@next/eslint-plugin-next"
+      ],
+      "via": [
+        "package:@eslint-community/eslint-utils"
+      ]
+    },
+    "@typescript-eslint/eslint-plugin": {
+      "nodes": [
+        "node_modules/@typescript-eslint/eslint-plugin"
+      ],
+      "via": [
+        "package:@typescript-eslint/parser",
+        "package:@typescript-eslint/type-utils",
+        "package:@typescript-eslint/utils",
+        "package:eslint"
+      ]
+    },
+    "@typescript-eslint/parser": {
+      "nodes": [
+        "node_modules/@typescript-eslint/parser"
+      ],
+      "via": [
+        "package:@typescript-eslint/typescript-estree",
+        "package:eslint"
+      ]
+    },
+    "@typescript-eslint/type-utils": {
+      "nodes": [
+        "node_modules/@typescript-eslint/type-utils"
+      ],
+      "via": [
+        "package:@typescript-eslint/typescript-estree",
+        "package:@typescript-eslint/utils",
+        "package:eslint"
+      ]
+    },
+    "@typescript-eslint/typescript-estree": {
+      "nodes": [
+        "node_modules/@typescript-eslint/typescript-estree"
+      ],
+      "via": [
+        "package:minimatch"
+      ]
+    },
+    "@typescript-eslint/utils": {
+      "nodes": [
+        "node_modules/@typescript-eslint/utils"
+      ],
+      "via": [
+        "package:@eslint-community/eslint-utils",
+        "package:@typescript-eslint/typescript-estree",
+        "package:eslint"
+      ]
+    },
+    "eslint": {
+      "nodes": [
+        "node_modules/eslint"
+      ],
+      "via": [
+        "package:@eslint-community/eslint-utils",
+        "package:@eslint/config-array",
+        "package:@eslint/eslintrc",
+        "package:minimatch"
+      ]
+    },
+    "eslint-config-next": {
+      "nodes": [
+        "node_modules/eslint-config-next"
+      ],
+      "via": [
+        "package:@next/eslint-plugin-next",
+        "package:eslint",
+        "package:eslint-plugin-import",
+        "package:eslint-plugin-jsx-a11y",
+        "package:eslint-plugin-react",
+        "package:typescript-eslint"
+      ]
+    },
+    "eslint-plugin-import": {
+      "nodes": [
+        "node_modules/eslint-plugin-import"
+      ],
+      "via": [
+        "package:minimatch"
+      ]
+    },
+    "eslint-plugin-jsx-a11y": {
+      "nodes": [
+        "node_modules/eslint-plugin-jsx-a11y"
+      ],
+      "via": [
+        "package:minimatch"
+      ]
+    },
+    "eslint-plugin-react": {
+      "nodes": [
+        "node_modules/eslint-plugin-react"
+      ],
+      "via": [
+        "package:minimatch"
+      ]
+    },
+    "minimatch": {
+      "nodes": [
+        "node_modules/@typescript-eslint/typescript-estree/node_modules/minimatch",
+        "node_modules/minimatch"
+      ],
+      "via": [
+        "advisory:https://github.com/advisories/GHSA-g3hv-75wg-m249"
+      ]
+    },
+    "typescript-eslint": {
+      "nodes": [
+        "node_modules/typescript-eslint"
+      ],
+      "via": [
+        "package:@typescript-eslint/eslint-plugin",
+        "package:@typescript-eslint/parser",
+        "package:@typescript-eslint/typescript-estree",
+        "package:@typescript-eslint/utils",
+        "package:eslint"
+      ]
+    }
+  },
+  "allowedCycles": [
+    {
+      "members": [
+        "@eslint-community/eslint-utils",
+        "eslint"
+      ],
+      "edges": [
+        [
+          "@eslint-community/eslint-utils",
+          "eslint"
+        ],
+        [
+          "eslint",
+          "@eslint-community/eslint-utils"
+        ]
+      ]
+    }
+  ]
+}
